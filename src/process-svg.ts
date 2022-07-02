@@ -5,7 +5,7 @@ import removeTransforms from './remove-transforms';
 
 function processSvg(inputSvg: SVG, pretty: Boolean = false): SVG {
   // Optimize the svg with svgo
-  const optimizedSvg = SVGOAdapter.optimize(inputSvg, true);
+  const optimizedSvg = SVGOAdapter.optimize(inputSvg, false);
 
   // Convert all shapes in the svg to paths
   const flattenedSvg = SVGFlattenAdapter.flatten(optimizedSvg);
@@ -14,7 +14,7 @@ function processSvg(inputSvg: SVG, pretty: Boolean = false): SVG {
   const svgWithoutTransforms = removeTransforms(flattenedSvg);
 
   // Optimize the svg finally with svgo (2nd time)
-  return SVGOAdapter.optimize(svgWithoutTransforms, false, pretty);
+  return SVGOAdapter.optimize(svgWithoutTransforms, true, pretty);
 }
 
 export default processSvg;
