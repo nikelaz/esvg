@@ -1,5 +1,6 @@
 import { optimize, OptimizeOptions, Plugin } from 'svgo';
 import generateHash from './generate-hash';
+import SVG from './svg';
 
 /**
  * Default options for the svgo plugin
@@ -21,7 +22,7 @@ const defaultOptions: OptimizeOptions = {
 };
 
 class SVGOAdapter {
-  static optimize(inputSVG: string): string {
+  static optimize(inputSVG: SVG): SVG {
     const options: OptimizeOptions = defaultOptions;
 
     const prefixIdsPlugin: Plugin = {
@@ -33,9 +34,13 @@ class SVGOAdapter {
 
     options.plugins.push(prefixIdsPlugin);
 
-    const result: any = optimize(inputSVG, options);
+    const result: any = optimize(inputSVG.toString(), options);
 
-    return result.data;
+    if (result.error) throw new Error(result.error.toString());
+
+    if (!result.data) throw new Error('No result data from the SVGO optimization');
+
+    return new SVG(result.data);
   }
 }
 

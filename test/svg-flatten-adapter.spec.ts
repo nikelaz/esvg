@@ -1,9 +1,10 @@
+import SVG from '../src/svg';
 import SVGFlattenAdapter from '../src/svg-flatten-adapter';
 import removeWhitespace from './remove-whitespace';
 
 describe('flatten()', () => {
   test('converts all shape types to path', () => {
-    const inputSvg = `
+    const inputSvg = new SVG(`
       <svg width="200" height="250">
         <rect x="60" y="10" rx="10" ry="10" width="30" height="30" />
         <circle cx="25" cy="75" r="20" />
@@ -13,9 +14,9 @@ describe('flatten()', () => {
         <polygon points="50 160 55 180 70 180 60 190 65 205 50 195 35 205 40 190 30 180 45 180" />
         <path d="M20,230 Q40,205 50,230 T90,230" />
       </svg>
-    `;
+    `);
 
-    const expectedSvg = `
+    const expectedSvg = new SVG(`
       <svg width="200" height="250">
         <path rx="10" ry="10" d="M60,10 90,10 90,40 60,40z"/>
         <path d="M5,75a20,20 0 1,0 40,0a20,20 0 1,0 -40,0"/>
@@ -25,11 +26,11 @@ describe('flatten()', () => {
         <path d="M50,160 55,180 70,180 60,190 65,205 50,195 35,205 40,190 30,180 45,180z"/>
         <path d="M20,230 Q40,205 50,230 T90,230"/>
       </svg>
-    `;
+    `);
 
     const result = SVGFlattenAdapter.flatten(inputSvg);
 
-    expect(removeWhitespace(result)).toEqual(removeWhitespace(expectedSvg));
+    expect(removeWhitespace(result.toString())).toEqual(removeWhitespace(expectedSvg.toString()));
   });
 });
 
