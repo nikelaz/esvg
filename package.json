@@ -10,7 +10,7 @@
     "build": "npx tsc",
     "start": "node dist/index",
     "test": "jest",
-    "local": "npm i -g && esvg"
+    "test:coverage": "jest --coverage"
   },
   "author": "Nikola Lazarov",
   "license": "MIT",
