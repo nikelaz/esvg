@@ -1,4 +1,3 @@
-// @ts-ignore
 import * as svgFlatten from 'svg-flatten';
 
 class SVGFlattenAdapter {
