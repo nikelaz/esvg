@@ -23,17 +23,26 @@ const defaultOptions: OptimizeOptions = {
 };
 
 class SVGOAdapter {
-  static optimize(inputSVG: SVG): SVG {
+  static optimize(inputSVG: SVG, prefix: Boolean, pretty: Boolean = false): SVG {
     const options: OptimizeOptions = defaultOptions;
 
-    const prefixIdsPlugin: Plugin = {
-      name: 'prefixIds',
-      params: {
-        prefix: generateHash()
-      }
-    };
+    if (prefix) {
+      const prefixIdsPlugin: Plugin = {
+        name: 'prefixIds',
+        params: {
+          prefix: generateHash()
+        }
+      };
 
-    options.plugins.push(prefixIdsPlugin);
+      options.plugins.push(prefixIdsPlugin);
+    }
+
+    if (pretty) {
+      options.js2svg = {
+        pretty: true,
+        indent: 2
+      };
+    }
 
     const result: any = optimize(inputSVG.toString(), options);
 

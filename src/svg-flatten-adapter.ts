@@ -1,4 +1,4 @@
-import * as svgFlatten from 'svg-flatten';
+import svgFlatten from 'svg-flatten';
 import SVG from './svg';
 
 class SVGFlattenAdapter {

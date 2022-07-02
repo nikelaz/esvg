@@ -2,15 +2,24 @@
   "name": "esvg",
   "version": "1.0.0",
   "description": "SVG Optimization Utility",
-  "main": "index.js",
+  "main": "dist/index.js",
+  "bin": {
+    "esvg": "./dist/index.js"
+  },
   "scripts": {
     "build": "npx tsc",
     "start": "node dist/index",
-    "test": "jest"
+    "test": "jest",
+    "local": "npm i -g && esvg"
   },
   "author": "Nikola Lazarov",
   "license": "MIT",
   "devDependencies": {
+    "@types/clear": "0.1.2",
+    "@types/cli-progress": "3.11.0",
+    "@types/chalk": "2.2.0",
+    "@types/commander": "2.12.2",
+    "@types/figlet": "1.5.4",
     "@types/jest": "28.1.4",
     "@types/svgo": "2.6.3",
     "@types/xmldoc": "1.1.6",
@@ -20,6 +29,11 @@
     "typescript": "4.7.4"
   },
   "dependencies": {
+    "chalk": "4.1.2",
+    "clear": "0.1.0",
+    "cli-progress": "3.11.2",
+    "commander": "9.3.0",
+    "figlet": "1.5.2",
     "svg-flatten": "1.0.1",
     "svgo": "2.8.0",
     "svgpath": "2.5.0",

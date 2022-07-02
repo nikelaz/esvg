@@ -1,6 +1,6 @@
 import { XmlDocument, XmlElement } from 'xmldoc';
 import SVG from './svg';
-import * as svgpath from 'svgpath';
+import svgpath from 'svgpath';
 
 const transforms = [
   'translate',
