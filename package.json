@@ -1,6 +1,6 @@
 {
   "name": "esvg",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "SVG Optimization Utility",
   "main": "dist/index.js",
   "bin": {
