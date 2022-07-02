@@ -5,12 +5,17 @@
   "main": "index.js",
   "scripts": {
     "build": "npx tsc",
-    "start": "node dist/index"
+    "start": "node dist/index",
+    "test": "jest"
   },
   "author": "Nikola Lazarov",
   "license": "MIT",
   "devDependencies": {
+    "@types/jest": "28.1.4",
     "@types/svgo": "2.6.3",
+    "jest": "28.1.2",
+    "ts-jest": "28.0.5",
+    "ts-node": "10.8.1",
     "typescript": "4.7.4"
   },
   "dependencies": {
