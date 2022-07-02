@@ -21,11 +21,6 @@ class SVG {
     this.xmlString = inputString;
     this.xmlDoc = new XmlDocument(inputString);
   }
-
-  public updateFromXmlDox(inputXmlDoc: XmlDocument): void {
-    this.xmlDoc = inputXmlDoc;
-    this.xmlString = this.xmlDoc.toString();
-  }
 }
 
 export default SVG;

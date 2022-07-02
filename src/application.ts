@@ -2,7 +2,7 @@ import clear from 'clear';
 import figlet from 'figlet';
 import { program } from 'commander';
 import optimizeFiles from './optimize-files';
-import readFiles from './read-files';
+import filterFiles from './filter-files';
 
 class Application {
   private static instance: Application;
@@ -32,7 +32,7 @@ class Application {
 
     const options = program.opts();
 
-    const files = await readFiles(program.args);
+    const files = filterFiles(program.args);
 
     await optimizeFiles(files, options.pretty);
   }

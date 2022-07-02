@@ -1,5 +1,6 @@
 import SVG from '../src/svg';
 import SVGOAdapter from '../src/svgo-adapter';
+import removeWhitespace from './remove-whitespace';
 
 /**
  * The SVGO plugin is tested, therefore this test suite only
@@ -27,10 +28,28 @@ describe('optimize()', () => {
       </svg>
     `);
 
-    const result = SVGOAdapter.optimize(svg, false);
+    const result = SVGOAdapter.optimize(svg, true);
     const resultStr = result.toString();
     
     expect(resultStr).toContain('id=');
     expect(resultStr).not.toContain('myClip');
+  });
+
+  test('converts inline style to attributes', () => {
+    const svg = new SVG(`
+      <svg viewBox="0 0 100 100">
+        <rect x="0" y="0" width="10" height="10" style="transform: translate(10px, 10px);" />
+      </svg>
+    `);
+
+    const expectedResult = new SVG(`
+      <svg viewBox="0 0 100 100">
+        <path d="M00h10v10H0z" transform="translate(10px,10px)" />
+      </svg>
+    `);
+
+    const result = SVGOAdapter.optimize(svg, true);
+
+    expect(removeWhitespace(result.toString())).toEqual(removeWhitespace(expectedResult.toString()));
   });
 });
