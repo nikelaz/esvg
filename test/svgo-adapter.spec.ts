@@ -11,7 +11,7 @@ describe('optimize()', () => {
 
     const expectedResult = new SVG('<svg viewBox="0 0 10 10"/>');
     
-    const result = SVGOAdapter.optimize(svg);
+    const result = SVGOAdapter.optimize(svg, false);
 
     expect(result.toString()).toEqual(expectedResult.toString());
   });
@@ -27,7 +27,7 @@ describe('optimize()', () => {
       </svg>
     `);
 
-    const result = SVGOAdapter.optimize(svg);
+    const result = SVGOAdapter.optimize(svg, false);
     const resultStr = result.toString();
     
     expect(resultStr).toContain('id=');
