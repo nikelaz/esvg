@@ -22,6 +22,7 @@ class Application {
     console.log(figlet.textSync('esvg', { horizontalLayout: 'full' }));
 
     program
+      .name('esvg')
       .version('1.1.0')
       .description('SVG Optimization Utility')
       .argument('<glob>', 'the input svg file(s) to optimize')

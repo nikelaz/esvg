@@ -19,7 +19,7 @@ npm install -g esvg
 ## Usage
 
 ```sh
-svgo <glob> [options]
+esvg <glob> [options]
 ```
 
 Arguments:
