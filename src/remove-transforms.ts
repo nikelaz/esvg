@@ -35,12 +35,10 @@ function parseTransforms(inputPath: XmlElement):Array<Transform> {
   return output;
 }
 
-function applyTransform(inputPath: XmlElement): void {
-  if (!inputPath.attr.transform || !inputPath.attr.d) return;
+function applyTransform(inputPath: XmlElement, transforms: Array<Transform>, deleteTransform: Boolean = true): void {
+  if (!inputPath.attr.d || transforms.length === 0) return;
 
   const path = svgpath(inputPath.attr.d);
-  
-  const transforms = parseTransforms(inputPath);
 
   let transformedPath = path;
 
@@ -59,7 +57,14 @@ function applyTransform(inputPath: XmlElement): void {
   });
 
   inputPath.attr.d = transformedPath.toString();
-  delete inputPath.attr.transform;
+
+  if (deleteTransform) delete inputPath.attr.transform;
+
+  if (inputPath.children) {
+    inputPath.eachChild(child => {
+      applyTransform(child, transforms, false);
+    });
+  }
 }
 
 function modifyPaths(xmlNode: (XmlDocument | XmlElement)) {
@@ -68,7 +73,8 @@ function modifyPaths(xmlNode: (XmlDocument | XmlElement)) {
   xmlNode.eachChild((child) => {
     if (!child.name || child.name !== 'path') return;
 
-    applyTransform(child);
+    const transforms = parseTransforms(child);
+    applyTransform(child, transforms, true);
 
     if (child.children.length > 0) modifyPaths(child);
   });
