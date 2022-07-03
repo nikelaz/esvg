@@ -18,7 +18,6 @@ const defaultOptions: OptimizeOptions = {
     },
     { name: 'sortAttrs' },
     { name: 'removeDimensions' },
-    { name: 'convertStyleToAttrs' }
   ]
 };
 
