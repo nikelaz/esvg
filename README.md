@@ -1,12 +1,14 @@
 # eSVG
 
-eSVG is a utility which optimizes SVGs. It combines multiple open-source packages to achieve the following:
-- Clean post-processed XML markup
-- Converts all SVG shapes to paths
-- Removes transforms
-- Prefixes IDs and classes with hash to avoid naming conflicts
+eSVG is an optimization utility for Scalable Vector Graphics. It does multiple optimization operations, including:
 
-This utility IS opinionated, because it attempts to provide an easy, no-config-necessary way to optimize SVGs for the web.
+- Converts all SVG shapes to paths
+- Removes translate, scale and matrix transforms from the paths
+- Prefixes IDs and classes with hash to avoid naming conflicts when SVGs are used inline
+- Performs multiple optimizations with SVGO
+
+This software IS opinionated, because it attempts to provide an easy, no-config-necessary way to optimize SVGs for the web.
+Nevertheless, the plan for this project is to expose more options and configuration in future releases.
 
 ## Installation
 
@@ -21,9 +23,9 @@ svgo <glob> [options]
 ```
 
 Arguments:
-- `glob` - The input svg file(s) to optimize
+- `glob` - the input svg file(s) to optimize
 
 Options:
 - `-V, --version` - output the version number
-- `-p, --pretty` - Outputs the SVG in a readable format
+- `-p, --pretty` - the output SVG will not me minified
 - `-h, --help` - display help for command

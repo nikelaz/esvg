@@ -22,10 +22,10 @@ class Application {
     console.log(figlet.textSync('esvg', { horizontalLayout: 'full' }));
 
     program
-      .version('1.0.0')
+      .version('1.1.0')
       .description('SVG Optimization Utility')
-      .argument('<glob>', 'The input svg file(s) to optimize')
-      .option('-p, --pretty', 'Outputs the SVG in a readable format')
+      .argument('<glob>', 'the input svg file(s) to optimize')
+      .option('-p, --pretty', 'the output SVG will not me minified')
       .parse(argv);
 
     if (argv.length < 3) program.outputHelp();
