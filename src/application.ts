@@ -3,6 +3,7 @@ import figlet from 'figlet';
 import { program } from 'commander';
 import optimizeFiles from './optimize-files';
 import filterFiles from './filter-files';
+import { Options } from './types/options';
 
 class Application {
   private static instance: Application;
@@ -27,15 +28,18 @@ class Application {
       .description('SVG Optimization Utility')
       .argument('<glob>', 'the input svg file(s) to optimize')
       .option('-p, --pretty', 'the output SVG will not me minified')
+      .option('-rt, --removeTransforms', 'remove the transforms')
       .parse(argv);
 
     if (argv.length < 3) program.outputHelp();
 
-    const options = program.opts();
+    const options: Options = {
+      ...program.opts()
+    };
 
     const files = filterFiles(program.args);
 
-    await optimizeFiles(files, options.pretty);
+    await optimizeFiles(files, options);
   }
 }
 
