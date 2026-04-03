@@ -1,0 +1,44 @@
+import { Sidebar } from "./sidebar/sidebar.slint";
+import { SvgViewer } from "./svg-viewer.slint";
+import { LoadingDialog } from "./loading-dialog.slint";
+import { Button, Palette } from "std-widgets.slint";
+import { TopBar } from "./top-bar.slint";
+import { StatusBar } from "./status-bar.slint";
+import { AppState } from "./app-state.slint";
+export { AppState }
+
+export component AppWindow inherits Window {
+  callback open-file();
+
+  min-width: 1280px;
+  min-height: 720px;
+
+  HorizontalLayout {
+    padding: 5px;
+    spacing: 5px;
+
+    VerticalLayout {
+      spacing: 5px;
+      horizontal-stretch: 1;
+
+      TopBar {
+        open-file() => {
+          root.open-file();
+        }
+      }
+
+      SvgViewer {}
+
+      StatusBar {}
+    }
+
+    Sidebar {}
+  }
+
+  if AppState.loading && AppState.loading-dialog: LoadingDialog {
+    x: 0;
+    y: 0;
+    width: root.width;
+    height: root.height;
+  }
+}

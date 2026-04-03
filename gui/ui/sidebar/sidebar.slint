@@ -1,0 +1,20 @@
+import { Palette, Switch } from "std-widgets.slint";
+import { SidebarPanelHeader, SidebarPanelContent } from "./sidebar-panel.slint";
+import { PluginsPanel } from "./plugins-panel.slint";
+import { OptimizationPanel } from "./optimization-panel.slint";
+import { ExportPanel } from "./export-panel.slint";
+
+export component Sidebar inherits Rectangle {
+  background: Palette.alternate-background;
+  min-width: 280px;
+
+  VerticalLayout {
+    padding: 0;
+    alignment: start;
+    min-width: 280px;
+
+    PluginsPanel {}
+    OptimizationPanel {}
+    ExportPanel {} 
+  }
+}

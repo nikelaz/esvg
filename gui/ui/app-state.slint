@@ -1,0 +1,49 @@
+export global AppState {
+  // SVG Textures and Metadata
+  in property <image> svg-image-original;
+  in property <image> svg-image-optimized;
+  in property <length> svg-width;
+  in property <length> svg-height;
+
+  // Loading related
+  in property <bool> zoom-enabled: false;
+  in property <bool> svg-loaded: false;
+  in property <bool> loading: false;
+  in property <string> loading-status: "";
+  in property <bool> loading-dialog: false;
+
+  // UI labels and control state
+  in-out property <bool> show-optimized: true;
+  in property <string> original-size: "";
+  in property <string> optimized-size: "";
+
+  // Plugins
+  in-out property <bool> plugin-apply-transforms: true;
+  in-out property <bool> plugin-collapse-groups: true;
+  in-out property <bool> plugin-combine-paths: true;
+  in-out property <bool> plugin-css-to-attributes: true;
+  in-out property <bool> plugin-mangle-ids: true;
+  in-out property <bool> plugin-number-precision: true;
+  in-out property <bool> plugin-optimize-colors: true;
+  in-out property <bool> plugin-remove-empty-text: true;
+  in-out property <bool> plugin-remove-unnecessary-attrs: true;
+  in-out property <bool> plugin-remove-unnecessary-clip-paths: true;
+  in-out property <bool> plugin-shape-to-path: true;
+  in-out property <bool> plugin-simplify-paths: true;
+  in-out property <bool> plugin-sort-attrs: true;
+
+  // Export - SVG options
+  in-out property <bool> export-svg-include-viewbox: true;
+  in-out property <bool> export-svg-include-dimensions: false;
+  in property <float> export-svg-natural-width;   // set once on load, never mutated by UI
+  in property <float> export-svg-natural-height;  // set once on load, never mutated by UI
+  in-out property <float> export-svg-width;
+  in-out property <float> export-svg-height;
+
+  // Export - PNG options
+  in-out property <float> export-png-width;
+  in-out property <float> export-png-height;
+
+  callback request-optimize();
+  callback export-file(/* format: */ string);
+}

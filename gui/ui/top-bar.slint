@@ -1,0 +1,39 @@
+import { Palette, Button } from "std-widgets.slint";
+import { AppState } from "./app-state.slint";
+
+export component TopBar inherits Rectangle {
+  callback open-file();
+
+  background: Palette.alternate-background;
+
+  HorizontalLayout {
+    padding: 10px;
+    spacing: 20px;
+    alignment: start;
+
+    Button {
+      text: "Open File";
+      clicked => { root.open-file(); }
+    }
+
+    HorizontalLayout {
+      alignment: start;
+      spacing: 3px;
+
+      Button {
+        text: "Original";
+        checked: !AppState.show-optimized;
+        enabled: AppState.svg-loaded;
+        clicked => { AppState.show-optimized = false; }
+      }
+
+      Button {
+        text: "Optimized";
+        checked: AppState.show-optimized;
+        enabled: AppState.svg-loaded;
+        clicked => { AppState.show-optimized = true; }
+      }
+    }
+  }
+}
+

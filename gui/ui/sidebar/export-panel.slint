@@ -1,0 +1,181 @@
+import { ComboBox, Button, CheckBox, LineEdit } from "std-widgets.slint";
+import { SidebarPanelHeader, SidebarPanelContent } from "./sidebar-panel.slint";
+import { AppState } from "../app-state.slint";
+
+export component ExportPanel inherits VerticalLayout {
+  // Aspect ratio derived from the SVG's natural (immutable) size so it never drifts as the user edits the inputs
+  property <float> svg-aspect-ratio: AppState.export-svg-natural-width > 0 ? AppState.export-svg-natural-width / AppState.export-svg-natural-height : 1.0;
+
+  // Track which dimension was last edited to avoid feedback loops
+  property <bool> svg-editing-width: false;
+  property <bool> png-editing-width: false;
+
+  SidebarPanelHeader {
+    label: "Export";
+  }
+
+  SidebarPanelContent {
+    VerticalLayout {
+      spacing: 10px;
+      alignment: start;
+
+      format-combo := ComboBox {
+        model: ["SVG", "PNG"];
+        current-value: "SVG";
+        enabled: AppState.svg-loaded;
+      }
+
+      // ── SVG options ──────────────────────────────────────────────────────────
+      if format-combo.current-value == "SVG" : VerticalLayout {
+        spacing: 8px;
+
+        CheckBox {
+          text: "Include viewBox";
+          checked <=> AppState.export-svg-include-viewbox;
+          enabled: AppState.svg-loaded;
+        }
+
+        CheckBox {
+          text: "Include width & height";
+          checked <=> AppState.export-svg-include-dimensions;
+          enabled: AppState.svg-loaded;
+        }
+
+        if AppState.export-svg-include-dimensions : VerticalLayout {
+          spacing: 4px;
+
+          HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            Text {
+              text: "W";
+              vertical-alignment: center;
+              width: 12px;
+            }
+            svg-w-input := LineEdit {
+              text: Math.round(AppState.export-svg-width) != 0 ? Math.round(AppState.export-svg-width) : "";
+              enabled: AppState.svg-loaded;
+              input-type: number;
+              edited(val) => {
+                if val != "" {
+                  AppState.export-svg-width = val.to-float();
+                  AppState.export-svg-height = svg-aspect-ratio > 0 ? val.to-float() / svg-aspect-ratio : val.to-float();
+                }
+              }
+            }
+          }
+
+          HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            Text {
+              text: "H";
+              vertical-alignment: center;
+              width: 12px;
+            }
+            svg-h-input := LineEdit {
+              text: Math.round(AppState.export-svg-height) != 0 ? Math.round(AppState.export-svg-height) : "";
+              enabled: AppState.svg-loaded;
+              input-type: number;
+              edited(val) => {
+                if val != "" {
+                  AppState.export-svg-height = val.to-float();
+                  AppState.export-svg-width = svg-aspect-ratio > 0 ? val.to-float() * svg-aspect-ratio : val.to-float();
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // ── PNG options ──────────────────────────────────────────────────────────
+      if format-combo.current-value == "PNG" : VerticalLayout {
+        spacing: 8px;
+
+        VerticalLayout {
+          spacing: 4px;
+
+          HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            Text {
+              text: "W";
+              vertical-alignment: center;
+              width: 12px;
+            }
+            png-w-input := LineEdit {
+              text: Math.round(AppState.export-png-width) != 0 ? Math.round(AppState.export-png-width) : "";
+              enabled: AppState.svg-loaded;
+              input-type: number;
+              edited(val) => {
+                if val != "" {
+                  AppState.export-png-width = val.to-float();
+                  AppState.export-png-height = svg-aspect-ratio > 0 ? val.to-float() / svg-aspect-ratio : val.to-float();
+                }
+              }
+            }
+          }
+
+          HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            Text {
+              text: "H";
+              vertical-alignment: center;
+              width: 12px;
+            }
+            png-h-input := LineEdit {
+              text: Math.round(AppState.export-png-height) != 0 ? Math.round(AppState.export-png-height) : "";
+              enabled: AppState.svg-loaded;
+              input-type: number;
+              edited(val) => {
+                if val != "" {
+                  AppState.export-png-height = val.to-float();
+                  AppState.export-png-width = svg-aspect-ratio > 0 ? val.to-float() * svg-aspect-ratio : val.to-float();
+                }
+              }
+            }
+          }
+        }
+
+        HorizontalLayout {
+          spacing: 6px;
+          alignment: start;
+
+          Button {
+            text: "1×";
+            enabled: AppState.svg-loaded;
+            clicked => {
+              AppState.export-png-width = AppState.export-svg-width;
+              AppState.export-png-height = AppState.export-svg-height;
+            }
+          }
+          Button {
+            text: "2×";
+            enabled: AppState.svg-loaded;
+            clicked => {
+              AppState.export-png-width = AppState.export-svg-width * 2;
+              AppState.export-png-height = AppState.export-svg-height * 2;
+            }
+          }
+          Button {
+            text: "3×";
+            enabled: AppState.svg-loaded;
+            clicked => {
+              AppState.export-png-width = AppState.export-svg-width * 3;
+              AppState.export-png-height = AppState.export-svg-height * 3;
+            }
+          }
+        }
+      }
+
+      Button {
+        text: "Export";
+        enabled: AppState.svg-loaded;
+        clicked => {
+          AppState.export-file(format-combo.current-value);
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+import { Palette, ProgressIndicator } from "std-widgets.slint";
+import { AppState } from "./app-state.slint";
+
+export component StatusBar inherits Rectangle {
+  background: Palette.alternate-background;
+
+  HorizontalLayout {
+    alignment: start;
+    spacing: 20px;
+    padding-top: 7px;
+    padding-bottom: 5px;
+    padding-left: 10px;
+    padding-right: 10px;
+
+    if AppState.loading && !AppState.loading-dialog: VerticalLayout {
+      alignment: center;
+
+      ProgressIndicator {
+        width: 120px;
+        height: 4px;
+        indeterminate: true;
+      }
+    }
+
+    if AppState.loading && !AppState.loading-dialog: Text {
+      text: AppState.loading-status;
+    }
+
+    if !AppState.loading || AppState.loading-dialog: Text {
+      text: "Ready";
+    }
+
+  }
+}

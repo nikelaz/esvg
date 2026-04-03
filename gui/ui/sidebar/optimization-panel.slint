@@ -1,0 +1,23 @@
+import { SidebarPanelHeader, SidebarPanelContent } from "./sidebar-panel.slint";
+import { AppState } from "../app-state.slint";
+
+export component OptimizationPanel inherits VerticalLayout {
+  SidebarPanelHeader {
+    label: "Optimization";
+  }
+
+  SidebarPanelContent {
+    VerticalLayout {
+      spacing: 10px;
+      alignment: start;
+
+      Text {
+        text: "Original: " + AppState.original-size;
+      }
+
+      Text {
+        text: "Optimized: " + AppState.optimized-size;
+      }
+    }
+  }
+}

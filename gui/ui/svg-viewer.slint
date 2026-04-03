@@ -1,0 +1,65 @@
+import { AppState } from "./app-state.slint";
+
+export component SvgViewer inherits Rectangle {
+  property <float> zoom: 1.0;
+  property <float> max_zoom: 6.0;
+
+  property <length> pan_x: (root.width - AppState.svg-width) / 2;
+  property <length> pan_y: (root.height - AppState.svg-height) / 2;
+  property <bool> is_panning: false;
+  property <length> last_mouse_x;
+  property <length> last_mouse_y;
+
+  clip: true;
+
+  TouchArea {
+    scroll-event(event) => {
+      if (AppState.zoom-enabled) {
+        if (event.delta-y > 0) {
+          if (zoom < max_zoom) {
+            root.pan_x = self.mouse-x - (self.mouse-x - root.pan_x) * 1.1;
+            root.pan_y = self.mouse-y - (self.mouse-y - root.pan_y) * 1.1;
+            zoom = zoom * 1.1;
+          }
+        } else {
+          if (zoom > 0.1) {
+            root.pan_x = self.mouse-x - (self.mouse-x - root.pan_x) / 1.1;
+            root.pan_y = self.mouse-y - (self.mouse-y - root.pan_y) / 1.1;
+            zoom = zoom / 1.1;
+          }
+        }
+      }
+      accept
+    }
+
+    pointer-event(event) => {
+      if (AppState.zoom-enabled && event.button == PointerEventButton.left) {
+        if (event.kind == PointerEventKind.down) {
+          root.is_panning = true;
+          root.last_mouse_x = self.mouse-x;
+          root.last_mouse_y = self.mouse-y;
+        } else {
+          root.is_panning = false;
+        }
+      }
+    }
+
+    moved() => {
+      if (root.is_panning) {
+        root.pan_x += self.mouse-x - root.last_mouse_x;
+        root.pan_y += self.mouse-y - root.last_mouse_y;
+        root.last_mouse_x = self.mouse-x;
+        root.last_mouse_y = self.mouse-y;
+      }
+    }
+
+    Image {
+      source: AppState.show-optimized ? AppState.svg-image-optimized : AppState.svg-image-original;
+      x: root.pan_x;
+      y: root.pan_y;
+      width: AppState.svg-width * root.zoom;
+      height: AppState.svg-height * root.zoom;
+      image-fit: fill;
+    }
+  }
+}
