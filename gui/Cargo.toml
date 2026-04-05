@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 resvg = "0.47.0"
 rfd = "0.17.2"
-slint = { version = "=1.14.1", features = ["renderer-femtovg-wgpu"] }
+slint = { version = "1.14.1", features = ["renderer-skia"] }
 esvg-rs = { path = "vendor/esvg-rs" }
 
 [build-dependencies]
