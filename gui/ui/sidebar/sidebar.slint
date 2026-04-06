@@ -5,8 +5,10 @@ import { OptimizationPanel } from "./optimization-panel.slint";
 import { ExportPanel } from "./export-panel.slint";
 
 export component Sidebar inherits Rectangle {
-  background: Palette.alternate-background;
   min-width: 280px;
+  background: #1A1A1A;
+  border-radius: 5px;
+  clip: true;
 
   VerticalLayout {
     padding: 0;

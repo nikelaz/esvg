@@ -1,6 +1,7 @@
-import { Switch, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { SidebarPanelHeader, SidebarPanelContent } from "./sidebar-panel.slint";
 import { AppState } from "../app-state.slint";
+import { NSwitch } from "../components/switch.slint";
 
 export component PluginsPanel inherits VerticalLayout {
   SidebarPanelHeader {
@@ -12,7 +13,7 @@ export component PluginsPanel inherits VerticalLayout {
       spacing: 10px;
       alignment: start;
 
-      Switch {
+      NSwitch {
         text: "Apply Transforms";
         checked <=> AppState.plugin-apply-transforms;
         enabled: AppState.svg-loaded;
@@ -21,7 +22,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "Collapse Groups";
         checked <=> AppState.plugin-collapse-groups;
         enabled: AppState.svg-loaded;
@@ -30,7 +31,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "Combine Paths";
         checked <=> AppState.plugin-combine-paths;
         enabled: AppState.svg-loaded;
@@ -39,7 +40,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "CSS to Attributes";
         checked <=> AppState.plugin-css-to-attributes;
         enabled: AppState.svg-loaded;
@@ -48,7 +49,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "Mangle IDs";
         checked <=> AppState.plugin-mangle-ids;
         enabled: AppState.svg-loaded;
@@ -57,7 +58,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "Number Precision";
         checked <=> AppState.plugin-number-precision;
         enabled: AppState.svg-loaded;
@@ -66,7 +67,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "Optimize Colors";
         checked <=> AppState.plugin-optimize-colors;
         enabled: AppState.svg-loaded;
@@ -75,7 +76,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "Remove Empty Text";
         checked <=> AppState.plugin-remove-empty-text;
         enabled: AppState.svg-loaded;
@@ -84,7 +85,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "Remove Unnecessary Attrs";
         checked <=> AppState.plugin-remove-unnecessary-attrs;
         enabled: AppState.svg-loaded;
@@ -93,7 +94,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "Remove Unnecessary Clip Paths";
         checked <=> AppState.plugin-remove-unnecessary-clip-paths;
         enabled: AppState.svg-loaded;
@@ -102,7 +103,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "Shape to Path";
         checked <=> AppState.plugin-shape-to-path;
         enabled: AppState.svg-loaded;
@@ -111,7 +112,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "Simplify Paths";
         checked <=> AppState.plugin-simplify-paths;
         enabled: AppState.svg-loaded;
@@ -120,7 +121,7 @@ export component PluginsPanel inherits VerticalLayout {
         }
       }
 
-      Switch {
+      NSwitch {
         text: "Sort Attrs";
         checked <=> AppState.plugin-sort-attrs;
         enabled: AppState.svg-loaded;

@@ -1,0 +1,119 @@
+export component NSwitch {
+    in property <bool> enabled: true;
+    in property <string> text;
+    in-out property <bool> checked;
+    callback toggled;
+
+    property <bool> focus-from-mouse: false;
+    private property <color> text-color: #ffffff;
+
+    function toggle-checked() {
+        if !root.enabled { return; }
+        root.checked = !root.checked;
+        root.toggled();
+    }
+
+    min-height: max(20px, layout.min-height);
+    vertical-stretch: 0;
+    horizontal-stretch: 0;
+    forward-focus: focus-scope;
+
+    states [
+        disabled when !root.enabled : {
+            rail.background: root.checked ? #2a4a8a : transparent;
+            thumb.background: #444444;
+            root.text-color: #555555;
+        }
+        pressed when touch.pressed : {
+            rail.background: root.checked ? #2a52c9 : #2a2a2a;
+        }
+        hover when touch.has-hover : {
+            rail.background: root.checked ? #0E55AD : #323232;
+            rail.border-color: root.checked ? #0E55AD : #666666;
+            thumb.background: root.checked ? #ffffff : #666666;
+        }
+        checked when root.checked : {
+            rail.background: #1C66C1;
+            rail.border-width: 0px;
+            thumb.background: #ffffff;
+        }
+    ]
+
+    layout := HorizontalLayout {
+        spacing: 10px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 40px;
+                height: 20px;
+
+                rail := Rectangle {
+                    border-radius: 10px;
+                    border-width: 2px;
+                    border-color: #666666;
+                    background: transparent;
+                }
+
+                thumb := Rectangle {
+                    x: root.checked ? parent.width - self.width - 4px : 4px;
+                    y: (parent.height - self.height) / 2;
+                    width: 12px;
+                    height: self.width;
+                    border-radius: self.height / 2;
+                    background: #666666;
+
+                    animate x, width, background { duration: 120ms; easing: ease-in-out; }
+                }
+
+                // Focus ring — keyboard only
+                if focus-scope.has-focus && !root.focus-from-mouse : Rectangle {
+                    border-radius: rail.border-radius + 3px;
+                    border-width: 2px;
+                    border-color: #1C66C1;
+                    x: -3px;
+                    y: -3px;
+                    width: parent.width + 6px;
+                    height: parent.height + 6px;
+                }
+            }
+        }
+
+        if root.text != "" : Text {
+            text: root.text;
+            color: root.text-color;
+            font-size: 13px;
+            vertical-alignment: center;
+            horizontal-alignment: left;
+        }
+    }
+
+    touch := TouchArea {
+        enabled <=> root.enabled;
+        clicked => {
+            root.focus-from-mouse = true;
+            focus-scope.focus();
+            root.toggle-checked();
+        }
+    }
+
+    focus-scope := FocusScope {
+        width: 0;
+        height: 0;
+        enabled <=> root.enabled;
+        changed has-focus => {
+            if !self.has-focus {
+                root.focus-from-mouse = false;
+            }
+        }
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.toggle-checked();
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+}

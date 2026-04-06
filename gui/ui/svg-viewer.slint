@@ -11,6 +11,15 @@ export component SvgViewer inherits Rectangle {
   property <length> last_mouse_y;
 
   clip: true;
+  border-radius: 5px;
+
+  Image {
+    width: parent.width;
+    height: parent.height;
+    source: AppState.checker-image;
+    image-fit: fill;
+    image-rendering: pixelated;
+  }
 
   TouchArea {
     scroll-event(event) => {

@@ -12,6 +12,24 @@ use esvg_rs::{apply_svg_export_options, optimize, PluginConfig, SvgExportOptions
 use rfd::AsyncFileDialog;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
+fn make_checker_image() -> SharedPixelBuffer<Rgba8Pixel> {
+    const SIZE: u32 = 256;
+    const CELL: u32 = 8;
+    const LIGHT: [u8; 4] = [0x4a, 0x4a, 0x4a, 0xff];
+    const DARK: [u8; 4] = [0x33, 0x33, 0x33, 0xff];
+
+    let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(SIZE, SIZE);
+    let pixels = buf.make_mut_bytes();
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let color = if ((x / CELL) + (y / CELL)) % 2 == 0 { LIGHT } else { DARK };
+            let i = ((y * SIZE + x) * 4) as usize;
+            pixels[i..i + 4].copy_from_slice(&color);
+        }
+    }
+    buf
+}
+
 fn render_svg(tree: &usvg::Tree, zoom: f32) -> SharedPixelBuffer<Rgba8Pixel> {
     let width = tree.size().width();
     let height = tree.size().height();
@@ -257,15 +275,20 @@ fn load_svg(
 fn main() -> Result<(), Box<dyn Error>> {
     let ui = AppWindow::new()?;
 
+    ui.global::<AppState>()
+        .set_checker_image(Image::from_rgba8(make_checker_image()));
+
     let svg_store: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let optimized_store: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let optimize_generation: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
 
     // Open file callback
     let ui_handle = ui.as_weak();
+
     let svg_store_for_open = Arc::clone(&svg_store);
     let optimized_store_for_open = Arc::clone(&optimized_store);
     let optimize_gen_for_open = Arc::clone(&optimize_generation);
+
     ui.on_open_file(move || {
         let ui_handle2 = ui_handle.clone();
         let svg_store = Arc::clone(&svg_store_for_open);
@@ -281,8 +304,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return;
             };
             let path = file.path().to_path_buf();
+
             // Invalidate any in-flight re-optimize from the previous file
             optimize_gen.fetch_add(1, Ordering::SeqCst);
+
             // Show loading dialog immediately before spawning the background thread
             if let Some(ui) = ui_handle2.upgrade() {
                 let state = ui.global::<AppState>();
@@ -293,6 +318,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 state.set_svg_loaded(false);
                 state.set_svg_image_original(Default::default());
                 state.set_svg_image_optimized(Default::default());
+
                 // Reset all plugin toggles to enabled for the new file
                 state.set_plugin_apply_transforms(true);
                 state.set_plugin_collapse_groups(true);
@@ -308,6 +334,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 state.set_plugin_simplify_paths(true);
                 state.set_plugin_sort_attrs(true);
             }
+
             load_svg(ui_handle2.clone(), Arc::clone(&svg_store), Arc::clone(&optimized_store), path);
         }).ok();
     });
@@ -359,6 +386,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             return;
         };
 
+        let ui_handle_for_export = ui_handle.clone();
         slint::spawn_local(async move {
             let file = match format.as_str() {
                 "PNG" => AsyncFileDialog::new()
@@ -378,8 +406,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return;
             }
 
+            if let Some(ui) = ui_handle_for_export.upgrade() {
+                let state = ui.global::<AppState>();
+                state.set_loading(true);
+                state.set_loading_status("Exporting...".into());
+            }
+
             match format.as_str() {
                 "PNG" => {
+                    let h = ui_handle_for_export.clone();
                     thread::spawn(move || {
                         let tree = match usvg::Tree::from_data(
                             optimized_svg.as_bytes(),
@@ -410,9 +445,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                         if let Ok(png_data) = pixmap.encode_png() {
                             std::fs::write(&path, png_data).ok();
                         }
+                        slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = h.upgrade() {
+                                ui.global::<AppState>().set_loading(false);
+                            }
+                        }).ok();
                     });
                 }
                 _ => {
+                    let h = ui_handle_for_export.clone();
                     thread::spawn(move || {
                         let opts = SvgExportOptions {
                             include_viewbox: svg_include_viewbox,
@@ -423,6 +464,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let output = apply_svg_export_options(&optimized_svg, &opts)
                             .unwrap_or(optimized_svg);
                         std::fs::write(&path, output.as_bytes()).ok();
+                        slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = h.upgrade() {
+                                ui.global::<AppState>().set_loading(false);
+                            }
+                        }).ok();
                     });
                 }
             }

@@ -12,7 +12,7 @@ slint = { version = "1.14.1", features = ["renderer-skia"] }
 esvg-rs = { path = "vendor/esvg-rs" }
 
 [build-dependencies]
-slint-build = "=1.14.1"
+slint-build = "1.14.1"
 
 [profile.release]
 codegen-units = 1

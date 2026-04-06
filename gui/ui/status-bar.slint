@@ -1,8 +1,9 @@
-import { Palette, ProgressIndicator } from "std-widgets.slint";
+import { ProgressIndicator } from "std-widgets.slint";
 import { AppState } from "./app-state.slint";
 
 export component StatusBar inherits Rectangle {
-  background: Palette.alternate-background;
+  background: #1A1A1A;
+  border-radius: 5px;
 
   HorizontalLayout {
     alignment: start;
