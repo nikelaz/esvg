@@ -6,7 +6,8 @@ pub mod plugins;
 pub mod svg;
 pub mod transform;
 
-pub use arbiter::Arbiter;
+pub use helpers::tree::{contains_element, has_markers};
+use arbiter::Arbiter;
 pub use plugin::{SingleElementPluginTrait, WholeSVGPluginTrait};
 pub use plugins::{
     ApplyTransformsPlugin, CollapseGroupsPlugin, CombinePathsPlugin, CssToAttributesPlugin,
@@ -108,25 +109,55 @@ pub fn apply_svg_export_options(
     Ok(svg.to_string())
 }
 
+/// Decimal places to keep, from the document's view size.
+///
+/// Coordinates are kept to about a thousandth of the view size, so small
+/// viewBoxes such as `0 0 1 1` keep more digits than the default. Never fewer
+/// than `default`, and never more than 8.
+fn precision_for_view(root: &xmltree::Element, default: u32) -> u32 {
+    let view_size = root
+        .attributes
+        .get("viewBox")
+        .and_then(|v| helpers::number::parse_list(v))
+        .filter(|v| v.len() == 4)
+        .map(|v| v[2].abs().max(v[3].abs()))
+        .or_else(|| {
+            let w = root.attributes.get("width").and_then(|v| helpers::number::parse_plain(v));
+            let h = root.attributes.get("height").and_then(|v| helpers::number::parse_plain(v));
+            match (w, h) {
+                (Some(w), Some(h)) => Some(w.max(h)),
+                _ => None,
+            }
+        });
+
+    match view_size {
+        Some(size) if size > 0.0 && size.is_finite() => {
+            let step = size * 1e-3;
+            let needed = (-step.log10()).ceil();
+            (needed.max(default as f64).min(8.0)) as u32
+        }
+        _ => default,
+    }
+}
+
 pub fn optimize(svg_string: &str, config: &PluginConfig) -> Result<String, String> {
     let svg = Svg::from_string(&svg_string.to_string()).map_err(|e| e.to_string())?;
     let mut arbiter = Arbiter::new();
 
     // Single-element plugins
-    if config.remove_unnecessary_attrs {
-        arbiter.add_single_element_plugin(Box::new(RemoveUnnecessaryAttrsPlugin));
-    }
     if config.optimize_colors {
         arbiter.add_single_element_plugin(Box::new(OptimizeColorsPlugin));
     }
-    if config.shape_to_path {
-        arbiter.add_single_element_plugin(Box::new(ShapeToPathPlugin));
-    }
-    if config.number_precision {
-        arbiter.add_single_element_plugin(Box::new(NumberPrecisionPlugin { precision: 2 }));
+    // Converting a shape changes its element name, which stylesheet selectors match.
+    if config.shape_to_path && !contains_element(&svg.root, "style") {
+        arbiter.add_single_element_plugin(Box::new(ShapeToPathPlugin {
+            convert_rects: !has_markers(&svg.root),
+        }));
     }
     if config.simplify_paths {
-        arbiter.add_single_element_plugin(Box::new(SimplifyPathsPlugin {}));
+        arbiter.add_single_element_plugin(Box::new(SimplifyPathsPlugin {
+            keep_vertices: has_markers(&svg.root),
+        }));
     }
     if config.sort_attrs {
         arbiter.add_single_element_plugin(Box::new(SortAttrsPlugin));
@@ -150,6 +181,14 @@ pub fn optimize(svg_string: &str, config: &PluginConfig) -> Result<String, Strin
     }
     if config.combine_paths {
         arbiter.add_whole_svg_plugin(Box::new(CombinePathsPlugin));
+    }
+    // After transforms are baked, so baked-in scales no longer magnify rounding.
+    if config.number_precision {
+        let precision = precision_for_view(&svg.root, 2);
+        arbiter.add_whole_svg_plugin(Box::new(NumberPrecisionPlugin { precision }));
+    }
+    if config.remove_unnecessary_attrs {
+        arbiter.add_whole_svg_plugin(Box::new(RemoveUnnecessaryAttrsPlugin));
     }
     if config.mangle_ids {
         arbiter.add_forced_whole_svg_plugin(Box::new(MangleIdsPlugin { prefix: None }));

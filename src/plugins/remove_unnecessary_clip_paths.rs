@@ -1,5 +1,7 @@
-use crate::helpers::bounding_box::compute_element_bbox;
-use crate::path::{Path, PathCommandType};
+use crate::helpers::tree::contains_element;
+use crate::helpers::bounding_box::{compute_element_bbox, BBox};
+use crate::helpers::number::parse_plain;
+use crate::path::{Path, Segment};
 use crate::plugin::WholeSVGPluginTrait;
 use crate::Svg;
 /**
@@ -9,315 +11,201 @@ use crate::Svg;
  * Author: Nikola Lazarov
  *
  * Description:
- * Removes clip-path definitions and references that have no visual effect.
- * Detects the following cases:
- * - Empty clipPaths (no child elements)
- * - ClipPaths containing a rect that fully covers the SVG viewBox
- * - ClipPaths whose bounding box fully contains the clipped element's bounding box
- * - Orphaned clipPath definitions that are not referenced by any element
+ * Removes clip-path references and definitions that have no visual effect.
+ * - A `clip-path` is removed from an element when the clip is a single plain
+ *   rectangle (userSpaceOnUse, no transform, no rounded corners) that fully
+ *   contains the element's geometry. Elements that paint outside their geometry
+ *   (strokes, filters, markers, including inherited ones) are never changed.
+ * - A clipPath that nothing references is removed.
  *
+ * Empty clip paths are kept: a reference to one hides the element, so removing
+ * the reference would make it visible.
+ *
+ * Documents that use <style> or <use> are left alone, because their rules and
+ * references can apply paint that the plugin cannot see.
  */
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use xmltree::Element;
+use xmltree::{Element, XMLNode};
 
 pub struct RemoveUnnecessaryClipPathsPlugin;
 
-/// Parsed viewBox: min-x, min-y, width, height
-struct ViewBox {
-    min_x: f64,
-    min_y: f64,
-    width: f64,
-    height: f64,
+/// Returns the id from a `url(#id)` value.
+fn parse_clip_path_url(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    let inner = trimmed.strip_prefix("url(")?.strip_suffix(')')?;
+    let inner = inner.trim().trim_matches(|c| c == '\'' || c == '"').trim();
+    inner.strip_prefix('#')
 }
 
-impl ViewBox {
-    fn from_str(s: &str) -> Option<Self> {
-        let parts: Vec<f64> = s
-            .split(|c: char| c == ',' || c.is_whitespace())
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| s.parse().ok())
-            .collect();
-
-        if parts.len() == 4 {
-            Some(ViewBox {
-                min_x: parts[0],
-                min_y: parts[1],
-                width: parts[2],
-                height: parts[3],
-            })
-        } else {
-            None
+/// Collects every id referenced as `url(#id)` in `text`.
+fn collect_urls(text: &str, out: &mut HashSet<String>) {
+    let mut rest = text;
+    while let Some(pos) = rest.find("url(") {
+        rest = &rest[pos + 4..];
+        let trimmed = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '\'' || c == '"');
+        if let Some(after_hash) = trimmed.strip_prefix('#') {
+            let end = after_hash
+                .find(|c: char| c == ')' || c == '\'' || c == '"' || c.is_whitespace())
+                .unwrap_or(after_hash.len());
+            out.insert(after_hash[..end].to_string());
         }
+    }
+}
+
+/// Collects every `url(#id)` reference in attributes and <style> text.
+fn collect_references(element: &Element, out: &mut HashSet<String>) {
+    for value in element.attributes.values() {
+        collect_urls(value, out);
+    }
+    if element.name == "style" {
+        for node in &element.children {
+            match node {
+                XMLNode::Text(text) | XMLNode::CData(text) => collect_urls(text, out),
+                _ => {}
+            }
+        }
+    }
+    for child in element.children.iter().filter_map(|c| c.as_element()) {
+        collect_references(child, out);
+    }
+}
+
+/// True when the element's own attributes can paint outside its geometry.
+fn own_paint_risk(element: &Element) -> bool {
+    element.attributes.iter().any(|(name, value)| match name.as_str() {
+        "stroke" => value.trim() != "none",
+        "filter" => true,
+        "style" => ["stroke", "filter", "marker"].iter().any(|p| value.contains(p)),
+        n => n.starts_with("marker"),
+    })
+}
+
+/// True when the element or anything below it can paint outside its geometry.
+fn subtree_paint_risk(element: &Element) -> bool {
+    own_paint_risk(element)
+        || element
+            .children
+            .iter()
+            .filter_map(|c| c.as_element())
+            .any(subtree_paint_risk)
+}
+
+/// Attributes that can hide a clip shape. A hidden shape clips everything away.
+const HIDING_ATTRIBUTES: &[&str] = &["visibility", "display", "style"];
+
+/// The box of a closed axis-aligned rectangle drawn as a path, such as the
+/// `M0 0H10V10H0Z` that Shape to Path produces for a <rect>.
+fn rect_from_path(element: &Element) -> Option<BBox> {
+    let segments = Path::parse(element.attributes.get("d")?)?.segments()?;
+    let mut points: Vec<(f64, f64)> = Vec::new();
+    let last = segments.len().checked_sub(1)?;
+    for (index, seg) in segments.iter().enumerate() {
+        match *seg {
+            Segment::Move { x, y } if index == 0 => points.push((x, y)),
+            Segment::Line { x, y } if index > 0 => points.push((x, y)),
+            Segment::Close if index == last => {}
+            _ => return None,
+        }
+    }
+    if points.len() == 5 && points[4] == points[0] {
+        points.pop();
+    }
+    if points.len() != 4 {
+        return None;
+    }
+    // Every edge, including the closing one, must be horizontal or vertical,
+    // and the four points must be the four distinct corners of their box.
+    for i in 0..4 {
+        let (a, b) = (points[i], points[(i + 1) % 4]);
+        if a.0 != b.0 && a.1 != b.1 {
+            return None;
+        }
+    }
+    let min_x = points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let max_x = points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+    let min_y = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let max_y = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    let corners = [(min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y)];
+    if !corners.iter().all(|c| points.contains(c)) {
+        return None;
+    }
+    Some(BBox::new(min_x, min_y, max_x, max_y))
+}
+
+/// The box of a clip path when it is a single plain rectangle, otherwise `None`.
+fn clip_box(clip: &Element) -> Option<BBox> {
+    if clip
+        .attributes
+        .get("clipPathUnits")
+        .map_or(false, |v| v != "userSpaceOnUse")
+    {
+        return None;
+    }
+    if clip.attributes.contains_key("transform")
+        || clip.attributes.contains_key("clip-path")
+        || HIDING_ATTRIBUTES.iter().any(|a| clip.attributes.contains_key(*a))
+    {
+        return None;
+    }
+
+    let mut children = clip.children.iter().filter_map(|c| c.as_element());
+    let child = children.next()?;
+    if children.next().is_some() {
+        return None;
+    }
+    if child.attributes.contains_key("transform")
+        || child.attributes.contains_key("clip-path")
+        || child.attributes.contains_key("mask")
+        || HIDING_ATTRIBUTES.iter().any(|a| child.attributes.contains_key(*a))
+    {
+        return None;
+    }
+    match child.name.as_str() {
+        "rect" => {
+            for corner in ["rx", "ry"] {
+                if let Some(value) = child.attributes.get(corner) {
+                    if parse_plain(value) != Some(0.0) {
+                        return None;
+                    }
+                }
+            }
+            compute_element_bbox(child)
+        }
+        "path" => rect_from_path(child),
+        _ => None,
     }
 }
 
 impl RemoveUnnecessaryClipPathsPlugin {
-    /// Parse a clip-path attribute value like `url(#someId)` and extract the ID.
-    fn parse_clip_path_url(value: &str) -> Option<String> {
-        let trimmed = value.trim();
-        if trimmed.starts_with("url(") && trimmed.ends_with(')') {
-            let inner = &trimmed[4..trimmed.len() - 1].trim();
-            // Remove surrounding quotes if present
-            let inner = inner.trim_matches(|c| c == '\'' || c == '"');
-            if inner.starts_with('#') {
-                return Some(inner[1..].to_string());
-            }
-        }
-        None
-    }
-
-    /// Check if a clipPath element is unnecessary because it contains a single
-    /// rect that fully covers the viewBox.
-    fn is_clip_path_covering_viewbox(clip_path: &Element, viewbox: &ViewBox) -> bool {
-        // Get child elements (skip text nodes, etc.)
-        let child_elements: Vec<&Element> = clip_path
-            .children
-            .iter()
-            .filter_map(|c| c.as_element())
-            .collect();
-
-        if child_elements.len() != 1 {
-            return false;
-        }
-
-        let element = child_elements[0];
-
-        if element.name == "rect" {
-            let x: f64 = element
-                .attributes
-                .get("x")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
-            let y: f64 = element
-                .attributes
-                .get("y")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
-            let width: f64 = match element.attributes.get("width").and_then(|v| v.parse().ok()) {
-                Some(w) => w,
-                None => return false,
-            };
-            let height: f64 = match element
-                .attributes
-                .get("height")
-                .and_then(|v| v.parse().ok())
-            {
-                Some(h) => h,
-                None => return false,
-            };
-
-            return x.round() <= viewbox.min_x.round()
-                && y.round() <= viewbox.min_y.round()
-                && (x + width).round() >= (viewbox.min_x + viewbox.width).round()
-                && (y + height).round() >= (viewbox.min_y + viewbox.height).round();
-        } else if element.name == "path" {
-            if let Some(d) = element.attributes.get("d") {
-                // Parse path and compute simple bbox
-                // Note: This is a simplified bbox computation that assumes the path
-                // generated by ShapeToPath (M L H V Z).
-                // It tracks min/max coordinates visited.
-                let path = Path::new(d);
-
-                let mut min_x = f64::INFINITY;
-                let mut min_y = f64::INFINITY;
-                let mut max_x = f64::NEG_INFINITY;
-                let mut max_y = f64::NEG_INFINITY;
-
-                let mut has_points = false;
-
-                for cmd in path.commands {
-                    match cmd.command_type {
-                        PathCommandType::MoveTo => {
-                            if cmd.values.len() >= 2 {
-                                let x = cmd.values[0] as f64;
-                                let y = cmd.values[1] as f64;
-                                min_x = min_x.min(x);
-                                min_y = min_y.min(y);
-                                max_x = max_x.max(x);
-                                max_y = max_y.max(y);
-                                has_points = true;
-                            }
-                        }
-                        PathCommandType::LineTo => {
-                            if cmd.values.len() >= 2 {
-                                let x = cmd.values[0] as f64;
-                                let y = cmd.values[1] as f64;
-                                min_x = min_x.min(x);
-                                min_y = min_y.min(y);
-                                max_x = max_x.max(x);
-                                max_y = max_y.max(y);
-                                has_points = true;
-                            }
-                        }
-                        PathCommandType::HorizontalLine => {
-                            if !cmd.values.is_empty() {
-                                let x = cmd.values[0] as f64;
-                                min_x = min_x.min(x);
-                                max_x = max_x.max(x);
-                                has_points = true;
-                            }
-                        }
-                        PathCommandType::VerticalLine => {
-                            if !cmd.values.is_empty() {
-                                let y = cmd.values[0] as f64;
-                                min_y = min_y.min(y);
-                                max_y = max_y.max(y);
-                                has_points = true;
-                            }
-                        }
-                        PathCommandType::Close | PathCommandType::CloseAlternate => {
-                            // Reset to start not strictly needed for bbox min/max only
-                        }
-                        // For other commands (curves), we skip precise check and return false to be safe
-                        // as ShapeToPath doesn't generate them for Rects.
-                        _ => return false,
-                    }
-                }
-
-                if has_points {
-                    // Check coverage with a small epsilon for float comparison logic if needed,
-                    // but usually exact inequality covers it.
-                    // Rounded comparison as requested to handle sub-pixel differences.
-                    return min_x.round() <= viewbox.min_x.round()
-                        && min_y.round() <= viewbox.min_y.round()
-                        && max_x.round() >= (viewbox.min_x + viewbox.width).round()
-                        && max_y.round() >= (viewbox.min_y + viewbox.height).round();
-                }
-            }
-        }
-
-        false
-    }
-
-    /// Check if a clipPath element is empty (no child elements).
-    fn is_clip_path_empty(clip_path: &Element) -> bool {
-        !clip_path.children.iter().any(|c| c.as_element().is_some())
-    }
-
-    /// Collect all clipPath IDs that are referenced via clip-path attributes
-    /// anywhere in the tree.
-    fn collect_referenced_ids(element: &Element, referenced: &mut HashSet<String>) {
-        if let Some(clip_attr) = element.attributes.get("clip-path") {
-            if let Some(id) = Self::parse_clip_path_url(clip_attr) {
-                referenced.insert(id);
-            }
-        }
-
-        for child in &element.children {
-            if let Some(child_element) = child.as_element() {
-                Self::collect_referenced_ids(child_element, referenced);
-            }
-        }
-    }
-
-    /// Remove clip-path attributes that reference IDs in the removal set.
-    fn remove_clip_path_references(element: &mut Element, ids_to_remove: &HashSet<String>) {
-        if let Some(clip_attr) = element.attributes.get("clip-path").cloned() {
-            if let Some(id) = Self::parse_clip_path_url(&clip_attr) {
-                if ids_to_remove.contains(&id) {
-                    element.attributes.remove("clip-path");
-                }
-            }
-        }
-
-        for child in element.children.iter_mut() {
-            if let Some(child_element) = child.as_mut_element() {
-                Self::remove_clip_path_references(child_element, ids_to_remove);
-            }
-        }
-    }
-
-    /// Remove clipPath definitions from defs whose IDs are in the removal set.
-    fn remove_clip_path_defs(element: &mut Element, ids_to_remove: &HashSet<String>) {
-        for child in element.children.iter_mut() {
-            if let Some(child_element) = child.as_mut_element() {
-                if child_element.name == "defs" {
-                    let new_children: Vec<xmltree::XMLNode> = child_element
-                        .children
-                        .iter()
-                        .filter(|node| {
-                            if let Some(el) = node.as_element() {
-                                if el.name == "clipPath" {
-                                    if let Some(id) = el.attributes.get("id") {
-                                        return !ids_to_remove.contains(id);
-                                    }
-                                }
-                            }
-                            true
-                        })
-                        .cloned()
-                        .collect();
-                    child_element.children = new_children;
-                }
-            }
-        }
-    }
-
-    /// Build a map from clipPath ID to the clipPath Element in defs.
-    fn collect_clip_path_elements(root: &Element) -> HashMap<String, Element> {
-        let mut map = HashMap::new();
-
-        for child in &root.children {
-            if let Some(defs) = child.as_element() {
-                if defs.name == "defs" {
-                    for def_child in &defs.children {
-                        if let Some(clip_path) = def_child.as_element() {
-                            if clip_path.name == "clipPath" {
-                                if let Some(id) = clip_path.attributes.get("id") {
-                                    map.insert(id.clone(), clip_path.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        map
-    }
-
-    /// Phase 1.5: Remove clip-path attributes from elements where the clipPath's
-    /// bounding box fully contains the clipped element's bounding box, meaning
-    /// the clip has no visual effect.
-    fn remove_redundant_clip_path_refs(
+    /// Removes `clip-path` from elements that the clip cannot affect.
+    fn remove_redundant_references(
         element: &mut Element,
-        clip_path_map: &HashMap<String, Element>,
+        clip_boxes: &HashMap<String, BBox>,
+        ancestor_risk: bool,
     ) {
-        // Check this element's clip-path attribute
-        if let Some(clip_attr) = element.attributes.get("clip-path").cloned() {
-            if let Some(id) = Self::parse_clip_path_url(&clip_attr) {
-                if let Some(clip_path_el) = clip_path_map.get(&id) {
-                    // Skip if clipPath has clipPathUnits="objectBoundingBox"
-                    let has_object_bbox_units = clip_path_el
-                        .attributes
-                        .get("clipPathUnits")
-                        .map_or(false, |v| v == "objectBoundingBox");
+        let risky = ancestor_risk || subtree_paint_risk(element);
 
-                    // Skip if clipPath has a transform
-                    let has_transform = clip_path_el.attributes.contains_key("transform");
+        if !risky {
+            let reference = element
+                .attributes
+                .get("clip-path")
+                .and_then(|v| parse_clip_path_url(v))
+                .and_then(|id| clip_boxes.get(id).copied());
 
-                    if !has_object_bbox_units && !has_transform {
-                        // Compute both bounding boxes
-                        let clip_bbox = compute_element_bbox(clip_path_el);
-                        let element_bbox = compute_element_bbox(element);
-
-                        if let (Some(cb), Some(eb)) = (clip_bbox, element_bbox) {
-                            if cb.contains(&eb) {
-                                // The clip-path has no visual effect — remove the attribute
-                                element.attributes.remove("clip-path");
-                            }
-                        }
+            if let Some(clip) = reference {
+                if let Some(geometry) = compute_element_bbox(element) {
+                    if clip.contains(&geometry) {
+                        element.attributes.remove("clip-path");
                     }
                 }
             }
         }
 
-        // Recurse into children
+        let child_risk = ancestor_risk || own_paint_risk(element);
         for child in element.children.iter_mut() {
             if let Some(child_element) = child.as_mut_element() {
-                Self::remove_redundant_clip_path_refs(child_element, clip_path_map);
+                Self::remove_redundant_references(child_element, clip_boxes, child_risk);
             }
         }
     }
@@ -325,76 +213,133 @@ impl RemoveUnnecessaryClipPathsPlugin {
 
 impl WholeSVGPluginTrait for RemoveUnnecessaryClipPathsPlugin {
     fn process(&self, svg: &mut Svg) -> Result<Svg, Box<dyn Error>> {
-        let viewbox = svg
-            .root
-            .attributes
-            .get("viewBox")
-            .and_then(|s| ViewBox::from_str(s));
+        let mut svg_clone = svg.clone();
+        let root = &mut svg_clone.root;
 
-        let mut ids_to_remove: HashSet<String> = HashSet::new();
-
-        // Phase 1: Find unnecessary clipPaths in defs
-        for child in svg.root.children.iter() {
-            if let Some(defs) = child.as_element() {
-                if defs.name == "defs" {
-                    for def_child in defs.children.iter() {
-                        if let Some(clip_path) = def_child.as_element() {
-                            if clip_path.name == "clipPath" {
-                                if let Some(id) = clip_path.attributes.get("id") {
-                                    let is_empty = Self::is_clip_path_empty(clip_path);
-                                    let covers_viewbox = viewbox.as_ref().map_or(false, |vb| {
-                                        Self::is_clip_path_covering_viewbox(clip_path, vb)
-                                    });
-
-                                    if is_empty || covers_viewbox {
-                                        ids_to_remove.insert(id.clone());
-                                    }
-                                }
-                            }
-                        }
+        // Clip paths defined at the top level, with their containment box when usable.
+        let mut clip_boxes: HashMap<String, BBox> = HashMap::new();
+        let mut defined: Vec<String> = Vec::new();
+        for defs in root.children.iter().filter_map(|c| c.as_element()) {
+            if defs.name != "defs" {
+                continue;
+            }
+            for clip in defs.children.iter().filter_map(|c| c.as_element()) {
+                if clip.name != "clipPath" {
+                    continue;
+                }
+                if let Some(id) = clip.attributes.get("id") {
+                    defined.push(id.clone());
+                    if let Some(bbox) = clip_box(clip) {
+                        clip_boxes.insert(id.clone(), bbox);
                     }
                 }
             }
         }
 
-        // Phase 1.5: Remove clip-path attributes where the clipPath's bbox
-        // fully contains the clipped element's bbox (clip has no visual effect)
-        let clip_path_map = Self::collect_clip_path_elements(&svg.root);
-        if !clip_path_map.is_empty() {
-            Self::remove_redundant_clip_path_refs(&mut svg.root, &clip_path_map);
+        // <style> rules and <use> references can apply paint the plugin cannot see.
+        if !clip_boxes.is_empty() && !contains_element(root, "style") && !contains_element(root, "use") {
+            Self::remove_redundant_references(root, &clip_boxes, false);
         }
 
-        // Phase 2: Find orphaned clipPaths (defined but never referenced)
-        let mut referenced_ids: HashSet<String> = HashSet::new();
-        Self::collect_referenced_ids(&svg.root, &mut referenced_ids);
+        // Remove clip paths that nothing references any more.
+        let mut referenced: HashSet<String> = HashSet::new();
+        collect_references(root, &mut referenced);
+        let orphaned: HashSet<String> = defined
+            .into_iter()
+            .filter(|id| !referenced.contains(id))
+            .collect();
 
-        for child in svg.root.children.iter() {
-            if let Some(defs) = child.as_element() {
-                if defs.name == "defs" {
-                    for def_child in defs.children.iter() {
-                        if let Some(clip_path) = def_child.as_element() {
-                            if clip_path.name == "clipPath" {
-                                if let Some(id) = clip_path.attributes.get("id") {
-                                    if !referenced_ids.contains(id) {
-                                        ids_to_remove.insert(id.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
+        if !orphaned.is_empty() {
+            for defs in root.children.iter_mut().filter_map(|c| c.as_mut_element()) {
+                if defs.name != "defs" {
+                    continue;
                 }
+                defs.children.retain(|node| match node.as_element() {
+                    Some(el) if el.name == "clipPath" => el
+                        .attributes
+                        .get("id")
+                        .map_or(true, |id| !orphaned.contains(id)),
+                    _ => true,
+                });
             }
         }
 
-        // If nothing to remove, return early
-        if ids_to_remove.is_empty() {
-            return Ok(svg.clone());
-        }
+        Ok(svg_clone)
+    }
+}
 
-        // Phase 3: Remove clip-path references and clipPath definitions
-        Self::remove_clip_path_references(&mut svg.root, &ids_to_remove);
-        Self::remove_clip_path_defs(&mut svg.root, &ids_to_remove);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Svg;
 
-        Ok(svg.clone())
+    fn optimize(input: &str) -> String {
+        let mut svg = Svg::from_string(&input.to_string()).unwrap();
+        RemoveUnnecessaryClipPathsPlugin.process(&mut svg).unwrap().to_string()
+    }
+
+    #[test]
+    fn keeps_reference_to_empty_clip_path() {
+        let out = optimize(
+            r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><clipPath id="e"/></defs><rect x="1" y="1" width="5" height="5" clip-path="url(#e)"/></svg>"##,
+        );
+        assert!(out.contains("clip-path=\"url(#e)\""));
+    }
+
+    #[test]
+    fn removes_reference_when_rect_clip_contains_element() {
+        let out = optimize(
+            r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><clipPath id="c"><rect x="0" y="0" width="100" height="100"/></clipPath></defs><rect x="10" y="10" width="20" height="20" clip-path="url(#c)"/></svg>"##,
+        );
+        assert!(!out.contains("clip-path"));
+        assert!(!out.contains("clipPath"), "orphaned clip removed");
+    }
+
+    #[test]
+    fn rectangle_path_clip_is_recognised() {
+        let out = optimize(
+            r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><clipPath id="c"><path d="M0 0H100V100H0Z"/></clipPath></defs><rect x="10" y="10" width="20" height="20" clip-path="url(#c)"/></svg>"##,
+        );
+        assert!(!out.contains("clip-path"), "{}", out);
+    }
+
+    #[test]
+    fn hidden_clip_shape_is_kept() {
+        let out = optimize(
+            r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><clipPath id="c"><rect width="100" height="100" visibility="hidden"/></clipPath></defs><rect x="10" y="10" width="20" height="20" clip-path="url(#c)"/></svg>"##,
+        );
+        assert!(out.contains("clip-path=\"url(#c)\""), "{}", out);
+    }
+
+    #[test]
+    fn non_rectangular_path_clip_is_kept() {
+        let out = optimize(
+            r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><clipPath id="c"><path d="M0 0H100V100Z"/></clipPath></defs><rect x="10" y="10" width="20" height="20" clip-path="url(#c)"/></svg>"##,
+        );
+        assert!(out.contains("clip-path=\"url(#c)\""), "{}", out);
+    }
+
+    #[test]
+    fn keeps_reference_when_element_pokes_out() {
+        let out = optimize(
+            r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><clipPath id="c"><rect x="0" y="0" width="100" height="100"/></clipPath></defs><rect x="50" y="50" width="100" height="20" clip-path="url(#c)"/></svg>"##,
+        );
+        assert!(out.contains("clip-path=\"url(#c)\""));
+    }
+
+    #[test]
+    fn keeps_reference_for_stroked_element() {
+        let out = optimize(
+            r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><clipPath id="c"><rect x="0" y="0" width="100" height="100"/></clipPath></defs><rect x="10" y="10" width="20" height="20" stroke="#000" stroke-width="8" clip-path="url(#c)"/></svg>"##,
+        );
+        assert!(out.contains("clip-path=\"url(#c)\""));
+    }
+
+    #[test]
+    fn keeps_clip_referenced_from_style() {
+        let out = optimize(
+            r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><clipPath id="c"><rect width="1" height="1"/></clipPath></defs><style>.a{clip-path:url(#c)}</style><rect class="a" width="5" height="5"/></svg>"##,
+        );
+        assert!(out.contains("clipPath"));
     }
 }

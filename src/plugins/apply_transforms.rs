@@ -1,482 +1,295 @@
-use crate::path::Path;
-use crate::path::PathCommandType;
+// Plugin
+//
+// Name: Apply Transforms
+// Author: Nikola Lazarov
+//
+// Description:
+// Bakes transforms into geometry where that cannot change the rendering.
+// - Leaf <path>, <rect> and <circle> elements whose transform is axis-aligned
+//   (translate, scale, flips, matrix with zero b and c, and combinations of
+//   these) get their coordinates rewritten and the transform removed.
+// - Transforms on <g> and <a> are pushed down onto their children.
+//
+// Each transform list is composed into a single matrix first, so a list the
+// plugin cannot read (rotate, skew, unitful values) is never partly applied.
+//
+// Nothing is baked where the transform's effect is visible through something
+// the element does not own: clip paths, masks, filters, markers, url() paints
+// (userSpaceOnUse gradients and patterns), stroke widths (scaling changes
+// them), or any stylesheet or <use> element that could depend on the transform.
+//
+// Todo:
+// [ ] - Bake rotations and skews (needs arc rotation and rounded-rect handling)
+
+use crate::helpers::tree::{contains_element, has_markers, is_non_rendered, num_attr};
+use crate::helpers::number::{format_number, parse_plain};
+use crate::path::{Path, Segment};
 use crate::plugin::WholeSVGPluginTrait;
-use crate::transform::TransformList;
-use crate::transform::TransformType;
+use crate::transform::{parse_transform, Affine};
 use crate::Svg;
-use regex::Regex;
-/**
- * Plugin
- *
- * Name: Apply Transforms
- * Author: Nikola Lazarov
- *
- * Description:
- * Apply transforms on vector elements. Supports path, circle, ellipse and rect.
- * Applies translate and scale transformations.
- * For group elements, pushes transforms down to children and then applies
- * them recursively to leaf elements.
- *
- * Todo:
- * [x] - Support circle and ellipse (they are more efficient than path)
- * [x] - Support groups
- * [ ] - Support other transform types - matrix, skew etc
- *
- */
 use std::error::Error;
 use xmltree::Element;
 
 pub struct ApplyTransformsPlugin;
 
+fn is_stroked(element: &Element) -> bool {
+    element
+        .attributes
+        .get("stroke")
+        .map_or(false, |v| v.trim() != "none")
+        || element.attributes.get("style").map_or(false, |v| v.contains("stroke"))
+}
+
+/// True when the element has an attribute whose meaning depends on its own
+/// coordinate system, so its geometry must not be rewritten.
+fn is_pinned(element: &Element) -> bool {
+    element.attributes.iter().any(|(name, value)| match name.as_str() {
+        "transform-origin" | "clip-path" | "mask" | "filter" | "style" => true,
+        "fill" | "stroke" => value.contains("url("),
+        n => n.starts_with("marker"),
+    })
+}
+
+/// Number of decimal digits kept when a value is written back is not relevant;
+/// this only decides whether two scale factors are equal.
+fn same_scale(a: f64, b: f64) -> bool {
+    (a.abs() - b.abs()).abs() < 1e-12
+}
+
+fn is_identity_scale(m: &Affine) -> bool {
+    (m.a - 1.0).abs() < 1e-12 && (m.d - 1.0).abs() < 1e-12
+}
+
+/// Applies an axis-aligned matrix to every point, and fixes the arc parameters.
+fn transform_segments(segments: &[Segment], m: &Affine) -> Vec<Segment> {
+    let flip = m.a * m.d < 0.0;
+    segments
+        .iter()
+        .map(|seg| match *seg {
+            Segment::Move { x, y } => {
+                let (x, y) = m.apply(x, y);
+                Segment::Move { x, y }
+            }
+            Segment::Line { x, y } => {
+                let (x, y) = m.apply(x, y);
+                Segment::Line { x, y }
+            }
+            Segment::Cubic { x1, y1, x2, y2, x, y } => {
+                let (x1, y1) = m.apply(x1, y1);
+                let (x2, y2) = m.apply(x2, y2);
+                let (x, y) = m.apply(x, y);
+                Segment::Cubic { x1, y1, x2, y2, x, y }
+            }
+            Segment::Quad { x1, y1, x, y } => {
+                let (x1, y1) = m.apply(x1, y1);
+                let (x, y) = m.apply(x, y);
+                Segment::Quad { x1, y1, x, y }
+            }
+            Segment::Arc { rx, ry, rotation, large, sweep, x, y } => {
+                let (x, y) = m.apply(x, y);
+                // A mirror image turns the ellipse's rotation around and reverses
+                // the direction it is traced in.
+                let rotation = if flip { -rotation } else { rotation };
+                let sweep = if flip { 1.0 - sweep } else { sweep };
+                Segment::Arc {
+                    rx: rx.abs() * m.a.abs(),
+                    ry: ry.abs() * m.d.abs(),
+                    rotation,
+                    large,
+                    sweep,
+                    x,
+                    y,
+                }
+            }
+            Segment::Close => Segment::Close,
+        })
+        .collect()
+}
+
+/// Rewrites path data. Returns `false` when the path cannot be baked safely.
+fn bake_path(element: &mut Element, m: &Affine) -> bool {
+    let segments = match element
+        .attributes
+        .get("d")
+        .and_then(|d| Path::parse(d))
+        .and_then(|p| p.segments())
+    {
+        Some(s) => s,
+        None => return false,
+    };
+
+    // An arc with a rotated ellipse is not preserved by non-uniform scaling.
+    let uniform = same_scale(m.a, m.d);
+    if !uniform {
+        let rotated_arc = segments.iter().any(|s| match s {
+            Segment::Arc { rotation, .. } => rotation.abs() > 1e-12,
+            _ => false,
+        });
+        if rotated_arc {
+            return false;
+        }
+    }
+
+    let baked = transform_segments(&segments, m);
+    element.attributes.insert("d".to_string(), Path::emit(&baked, None));
+    true
+}
+
+fn bake_circle(element: &mut Element, m: &Affine) -> bool {
+    let cx = match num_attr(element, "cx", 0.0) {
+        Some(v) => v,
+        None => return false,
+    };
+    let cy = match num_attr(element, "cy", 0.0) {
+        Some(v) => v,
+        None => return false,
+    };
+    let r = match element.attributes.get("r").and_then(|v| parse_plain(v)) {
+        Some(v) if v >= 0.0 => v,
+        _ => return false,
+    };
+
+    let (cx, cy) = m.apply(cx, cy);
+    element.attributes.insert("cx".to_string(), format_number(cx));
+    element.attributes.insert("cy".to_string(), format_number(cy));
+
+    if same_scale(m.a, m.d) {
+        element
+            .attributes
+            .insert("r".to_string(), format_number(r * m.a.abs()));
+    } else {
+        // A circle scaled differently on each axis is an ellipse.
+        element.name = "ellipse".to_string();
+        element.attributes.remove("r");
+        element
+            .attributes
+            .insert("rx".to_string(), format_number(r * m.a.abs()));
+        element
+            .attributes
+            .insert("ry".to_string(), format_number(r * m.d.abs()));
+    }
+    true
+}
+
+fn bake_rect(element: &mut Element, m: &Affine) -> bool {
+    let x = match num_attr(element, "x", 0.0) {
+        Some(v) => v,
+        None => return false,
+    };
+    let y = match num_attr(element, "y", 0.0) {
+        Some(v) => v,
+        None => return false,
+    };
+    let (width, height) = match (
+        element.attributes.get("width").and_then(|v| parse_plain(v)),
+        element.attributes.get("height").and_then(|v| parse_plain(v)),
+    ) {
+        (Some(w), Some(h)) if w >= 0.0 && h >= 0.0 => (w, h),
+        _ => return false,
+    };
+
+    // Rounded corners would be scaled by a different factor on each axis, so
+    // they are only handled when the transform is a pure translation.
+    let rounded = ["rx", "ry"].iter().any(|name| {
+        element
+            .attributes
+            .get(*name)
+            .map_or(false, |v| parse_plain(v) != Some(0.0))
+    });
+    if rounded && !is_identity_scale(m) {
+        return false;
+    }
+
+    let (x0, y0) = m.apply(x, y);
+    let (x1, y1) = m.apply(x + width, y + height);
+    element
+        .attributes
+        .insert("x".to_string(), format_number(x0.min(x1)));
+    element
+        .attributes
+        .insert("y".to_string(), format_number(y0.min(y1)));
+    element
+        .attributes
+        .insert("width".to_string(), format_number((x1 - x0).abs()));
+    element
+        .attributes
+        .insert("height".to_string(), format_number((y1 - y0).abs()));
+    true
+}
+
 impl ApplyTransformsPlugin {
-    fn translate_alternating_coords(coords: &mut Vec<f32>, dx: f32, dy: f32) {
-        let mut axis = 'x';
-
-        for coord in coords.iter_mut() {
-            if axis == 'x' {
-                *coord += dx;
-                axis = 'y';
-                continue;
-            }
-
-            *coord += dy;
-            axis = 'x';
-        }
-    }
-
-    fn scale_alternating_coords(coords: &mut Vec<f32>, scale_dx: f32, scale_dy: f32) {
-        let mut axis = 'x';
-
-        for coord in coords.iter_mut() {
-            if axis == 'x' {
-                *coord *= scale_dx;
-                axis = 'y';
-                continue;
-            }
-
-            *coord *= scale_dy;
-            axis = 'x';
-        }
-    }
-
-    fn apply_translation(path: &mut Path, dx: f32, dy: f32) {
-        for command in path.commands.iter_mut() {
-            match command.command_type {
-                // Absolute arc: translate only the endpoint of each arc segment.
-                // Each arc segment is 7 values: rx ry x-rotation large-arc sweep x y
-                // Only indices 5 and 6 (within each 7-value group) are the endpoint.
-                // rx, ry, x-rotation, large-arc-flag, sweep-flag are unaffected.
-                PathCommandType::Arc => {
-                    let mut i = 0;
-                    while i + 6 < command.values.len() {
-                        command.values[i + 5] += dx;
-                        command.values[i + 6] += dy;
-                        i += 7;
-                    }
-                }
-
-                // Relative arc: all values are offsets — endpoint is already relative,
-                // so translation has no effect.
-                PathCommandType::ArcRelative => {}
-
-                // Absolute horizontal line: single x-coordinate.
-                PathCommandType::HorizontalLine => {
-                    for v in command.values.iter_mut() {
-                        *v += dx;
-                    }
-                }
-
-                // Absolute vertical line: single y-coordinate.
-                PathCommandType::VerticalLine => {
-                    for v in command.values.iter_mut() {
-                        *v += dy;
-                    }
-                }
-
-                // Relative commands encode offsets from the current position.
-                // Translation of the entire shape does not change these offsets.
-                PathCommandType::MoveToRelative
-                | PathCommandType::LineToRelative
-                | PathCommandType::HorizontalLineRelative
-                | PathCommandType::VerticalLineRelative
-                | PathCommandType::CubicBezierCurveRelative
-                | PathCommandType::AdditionalBezierCurveRelative
-                | PathCommandType::QuadraticBezierCurveRelative
-                | PathCommandType::AdditionalQuadraticBezierCurveRelative => {}
-
-                // Commands with no values.
-                PathCommandType::Close | PathCommandType::CloseAlternate => {}
-
-                // All remaining absolute commands use alternating x/y coordinates.
-                _ => {
-                    Self::translate_alternating_coords(&mut command.values, dx, dy);
-                }
-            }
-        }
-    }
-
-    fn apply_scale(path: &mut Path, scale_dx: f32, scale_dy: f32) {
-        for command in path.commands.iter_mut() {
-            match command.command_type {
-                // Absolute arc: scale rx (index 0), ry (index 1), and the endpoint
-                // (indices 5 and 6) within each 7-value arc segment.
-                // x-rotation (2) and flags (3, 4) are untouched.
-                PathCommandType::Arc => {
-                    let mut i = 0;
-                    while i + 6 < command.values.len() {
-                        command.values[i + 0] *= scale_dx; // rx
-                        command.values[i + 1] *= scale_dy; // ry
-                        command.values[i + 5] *= scale_dx; // endpoint x
-                        command.values[i + 6] *= scale_dy; // endpoint y
-                        i += 7;
-                    }
-                }
-
-                // Relative arc: rx, ry, and the relative endpoint dx/dy all scale.
-                PathCommandType::ArcRelative => {
-                    let mut i = 0;
-                    while i + 6 < command.values.len() {
-                        command.values[i + 0] *= scale_dx; // rx
-                        command.values[i + 1] *= scale_dy; // ry
-                        command.values[i + 5] *= scale_dx; // relative endpoint dx
-                        command.values[i + 6] *= scale_dy; // relative endpoint dy
-                        i += 7;
-                    }
-                }
-
-                // Absolute horizontal line: single x-coordinate.
-                PathCommandType::HorizontalLine | PathCommandType::HorizontalLineRelative => {
-                    for v in command.values.iter_mut() {
-                        *v *= scale_dx;
-                    }
-                }
-
-                // Absolute/relative vertical line: single y-coordinate.
-                PathCommandType::VerticalLine | PathCommandType::VerticalLineRelative => {
-                    for v in command.values.iter_mut() {
-                        *v *= scale_dy;
-                    }
-                }
-
-                // Commands with no values.
-                PathCommandType::Close | PathCommandType::CloseAlternate => {}
-
-                // All other commands (absolute and relative) use alternating x/y values.
-                _ => {
-                    Self::scale_alternating_coords(&mut command.values, scale_dx, scale_dy);
-                }
-            }
-        }
-    }
-
-    fn remove_translate_from_transform(element: &mut Element) {
-        if let Some(transform_value) = element.attributes.get_mut("transform") {
-            // Regex pattern to match "translate(...)"
-            let re = Regex::new(r"\s*translate\([-?\d\.]+(?:\s*,?\s*[-?\d\.]+)?\)\s*").unwrap();
-
-            // Replace the "translate(...)" part with an empty string
-            let new_transform_value = re.replace_all(transform_value, "").trim().to_string();
-
-            // If the transform is now empty (i.e., there were only translate transforms), remove the attribute
-            if new_transform_value.is_empty() {
-                element.attributes.remove("transform");
-            } else {
-                // Otherwise, update the transform attribute with the modified value
-                *transform_value = new_transform_value;
-            }
-        }
-    }
-
-    fn remove_scale_from_transform(element: &mut Element) {
-        if let Some(transform_value) = element.attributes.get_mut("transform") {
-            // Regex pattern to match "scale(...)"
-            let re = Regex::new(r"\s*scale\([-?\d\.]+(?:\s*,?\s*[-?\d\.]+)?\)\s*").unwrap();
-
-            // Replace the "scale(...)" part with an empty string
-            let new_transform_value = re.replace_all(transform_value, "").trim().to_string();
-
-            // If the transform is now empty (i.e., there were only scale transforms), remove the attribute
-            if new_transform_value.is_empty() {
-                element.attributes.remove("transform");
-            } else {
-                // Otherwise, update the transform attribute with the modified value
-                *transform_value = new_transform_value;
-            }
-        }
-    }
-
-    fn apply_circle_translation(element: &mut Element, dx: f32, dy: f32) {
-        let cx = element.attributes.get("cx");
-        let cy = element.attributes.get("cy");
-
-        if cx.is_none() || cy.is_none() {
-            return;
-        }
-
-        let cx = cx.unwrap().parse::<f32>().unwrap();
-        let cy = cy.unwrap().parse::<f32>().unwrap();
-
-        element
-            .attributes
-            .insert("cx".to_string(), (cx + dx).to_string());
-        element
-            .attributes
-            .insert("cy".to_string(), (cy + dy).to_string());
-    }
-
-    fn apply_circle_scale(element: &mut Element, scale_x: f32, scale_y: f32) {
-        let cx = element.attributes.get("cx");
-        let cy = element.attributes.get("cy");
-        let r = element.attributes.get("r");
-
-        if cx.is_none() || cy.is_none() || r.is_none() {
-            return;
-        }
-
-        let cx = cx.unwrap().parse::<f32>().unwrap();
-        let cy = cy.unwrap().parse::<f32>().unwrap();
-        let r = r.unwrap().parse::<f32>().unwrap();
-
-        element
-            .attributes
-            .insert("cx".to_string(), (cx * scale_x).to_string());
-        element
-            .attributes
-            .insert("cy".to_string(), (cy * scale_y).to_string());
-
-        if scale_x != scale_y {
-            element.name = "ellipse".to_string();
-            element
-                .attributes
-                .insert("rx".to_string(), (r * scale_x).to_string());
-            element
-                .attributes
-                .insert("ry".to_string(), (r * scale_y).to_string());
-            element.attributes.remove("r");
-        } else {
-            element
-                .attributes
-                .insert("r".to_string(), (r * scale_x).to_string());
-        }
-    }
-
-    fn apply_rect_translation(element: &mut Element, dx: f32, dy: f32) {
-        let x: f32 = element
-            .attributes
-            .get("x")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.0);
-        let y: f32 = element
-            .attributes
-            .get("y")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.0);
-
-        element
-            .attributes
-            .insert("x".to_string(), (x + dx).to_string());
-        element
-            .attributes
-            .insert("y".to_string(), (y + dy).to_string());
-    }
-
-    fn apply_rect_scale(element: &mut Element, scale_x: f32, scale_y: f32) {
-        let x: f32 = element
-            .attributes
-            .get("x")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.0);
-        let y: f32 = element
-            .attributes
-            .get("y")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.0);
-
-        let width = element
-            .attributes
-            .get("width")
-            .and_then(|v| v.parse::<f32>().ok());
-        let height = element
-            .attributes
-            .get("height")
-            .and_then(|v| v.parse::<f32>().ok());
-
-        if width.is_none() || height.is_none() {
-            return;
-        }
-
-        let width = width.unwrap();
-        let height = height.unwrap();
-
-        element
-            .attributes
-            .insert("x".to_string(), (x * scale_x).to_string());
-        element
-            .attributes
-            .insert("y".to_string(), (y * scale_y).to_string());
-        element
-            .attributes
-            .insert("width".to_string(), (width * scale_x).to_string());
-        element
-            .attributes
-            .insert("height".to_string(), (height * scale_y).to_string());
-    }
-
-    /// Check if an element is a container/group element whose transform
-    /// can be pushed down to its children.
-    fn is_group_element(element: &Element) -> bool {
-        matches!(
-            element.name.as_str(),
-            "g" | "a" | "clipPath" | "marker" | "mask" | "pattern" | "switch" | "symbol"
-        )
-    }
-
-    /// Apply transforms to a leaf element (path, circle, ellipse) by modifying
-    /// its coordinates directly. Only translate and scale are applied; any
-    /// unsupported transform types remain in the transform attribute.
-    fn apply_leaf_transforms(element: &mut Element) {
-        let transform_str = match element.attributes.get("transform") {
-            Some(t) => t.clone(),
-            None => return,
-        };
-
-        // Skip if element has transform-origin
-        if element.attributes.contains_key("transform-origin") {
-            return;
-        }
-
-        let transforms_list = TransformList::new(&transform_str);
-
-        if element.name == "path" {
-            if let Some(path_data) = element.attributes.get("d").cloned() {
-                let mut path = Path::new(&path_data);
-
-                for transform in transforms_list.transforms {
-                    if transform.transform_type == TransformType::Translate {
-                        if let Some(dx) = transform.get_x() {
-                            Self::apply_translation(
-                                &mut path,
-                                dx,
-                                transform.get_y().unwrap_or(0.0),
-                            );
-                            Self::remove_translate_from_transform(element);
-                        }
-                        continue;
-                    }
-
-                    if transform.transform_type == TransformType::Scale {
-                        if let Some(dx) = transform.get_x() {
-                            Self::apply_scale(&mut path, dx, transform.get_y().unwrap());
-                            Self::remove_scale_from_transform(element);
-                        }
-                    }
-                }
-
-                let transformed_path = path.to_string();
-                element.attributes.insert("d".to_string(), transformed_path);
-            }
-        } else if element.name == "circle" {
-            for transform in transforms_list.transforms {
-                if transform.transform_type == TransformType::Translate {
-                    if let Some(dx) = transform.get_x() {
-                        Self::apply_circle_translation(
-                            element,
-                            dx,
-                            transform.get_y().unwrap_or(0.0),
-                        );
-                        Self::remove_translate_from_transform(element);
-                    }
-                    continue;
-                }
-
-                if transform.transform_type == TransformType::Scale {
-                    if let Some(dx) = transform.get_x() {
-                        Self::apply_circle_scale(element, dx, transform.get_y().unwrap());
-                        Self::remove_scale_from_transform(element);
-                    }
-                }
-            }
-        } else if element.name == "rect" {
-            for transform in transforms_list.transforms {
-                if transform.transform_type == TransformType::Translate {
-                    if let Some(dx) = transform.get_x() {
-                        Self::apply_rect_translation(element, dx, transform.get_y().unwrap_or(0.0));
-                        Self::remove_translate_from_transform(element);
-                    }
-                    continue;
-                }
-
-                if transform.transform_type == TransformType::Scale {
-                    if let Some(dx) = transform.get_x() {
-                        Self::apply_rect_scale(element, dx, transform.get_y().unwrap());
-                        Self::remove_scale_from_transform(element);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Push a group's transform down to each of its child elements, then
-    /// remove the transform from the group. Each child gets the group's
-    /// transform prepended to its own existing transform (if any).
-    fn push_transform_to_children(element: &mut Element) {
+    /// Moves a group's transform onto each child, then removes it from the group.
+    ///
+    /// This keeps the rendering because a child's coordinate system is the group's
+    /// system multiplied by the child's own transform. It does not hold for the
+    /// group's own clip, mask or filter, which use the group's system, so those
+    /// groups are skipped.
+    fn push_down(element: &mut Element) {
         let group_transform = match element.attributes.get("transform") {
             Some(t) => t.clone(),
             None => return,
         };
-
-        // Skip if the group has transform-origin — cannot safely decompose
-        if element.attributes.contains_key("transform-origin") {
+        if is_pinned(element) || parse_transform(&group_transform).is_none() {
+            return;
+        }
+        if !element.children.iter().any(|c| c.as_element().is_some()) {
             return;
         }
 
-        // Check that the group has at least one child element
-        let has_child_elements = element.children.iter().any(|c| c.as_element().is_some());
-        if !has_child_elements {
-            return;
-        }
-
-        // Prepend the group's transform to each child element's transform.
-        // SVG applies the group transform first (outermost), so it goes first
-        // in the string: "groupTransform childTransform"
         for child in element.children.iter_mut() {
             if let Some(child_el) = child.as_mut_element() {
-                let new_transform =
-                    if let Some(child_transform) = child_el.attributes.get("transform") {
-                        format!("{} {}", group_transform, child_transform)
-                    } else {
-                        group_transform.clone()
-                    };
-
-                child_el
-                    .attributes
-                    .insert("transform".to_string(), new_transform);
+                // Clip paths, gradients, <defs> and the like are not drawn here.
+                // They are used in the coordinate system of whatever references
+                // them, so the group's transform never applied to them.
+                if is_non_rendered(&child_el.name) {
+                    continue;
+                }
+                let combined = match child_el.attributes.get("transform") {
+                    Some(child_transform) => format!("{} {}", group_transform, child_transform),
+                    None => group_transform.clone(),
+                };
+                child_el.attributes.insert("transform".to_string(), combined);
             }
         }
 
-        // Remove the transform from the group
         element.attributes.remove("transform");
     }
 
-    /// Recursively process the element tree: push group transforms down to
-    /// children, then apply transforms to leaf elements.
-    fn apply_transforms_recursive(element: &mut Element) {
-        // If this is a group element with a transform, push it down to children
-        if Self::is_group_element(element) {
-            Self::push_transform_to_children(element);
+    fn apply_recursive(element: &mut Element, scale_safe: bool, ancestor_stroked: bool) {
+        if matches!(element.name.as_str(), "g" | "a") {
+            Self::push_down(element);
         }
 
-        // Recurse into children first (depth-first), so nested groups get
-        // their transforms pushed down before leaf application
-        for child in element.children.iter_mut() {
-            if let Some(child_el) = child.as_mut_element() {
-                Self::apply_transforms_recursive(child_el);
+        let stroked = ancestor_stroked || is_stroked(element);
+
+        if let Some(transform) = element.attributes.get("transform").cloned() {
+            if !is_pinned(element) {
+                if let Some(m) = parse_transform(&transform) {
+                    if m.is_axis_aligned() {
+                        let scaling = !is_identity_scale(&m);
+                        // Scaling changes stroke widths and dash lengths, which
+                        // the element may inherit from an ancestor or a <use>.
+                        let allowed = !scaling || (scale_safe && !stroked);
+                        if allowed {
+                            let baked = match element.name.as_str() {
+                                "path" => bake_path(element, &m),
+                                "rect" => bake_rect(element, &m),
+                                "circle" => bake_circle(element, &m),
+                                _ => false,
+                            };
+                            if baked {
+                                element.attributes.remove("transform");
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // Apply transforms on leaf elements (path, circle)
-        if !Self::is_group_element(element) {
-            Self::apply_leaf_transforms(element);
+        for child in element.children.iter_mut() {
+            if let Some(child_el) = child.as_mut_element() {
+                Self::apply_recursive(child_el, scale_safe, stroked);
+            }
         }
     }
 }
@@ -485,10 +298,19 @@ impl WholeSVGPluginTrait for ApplyTransformsPlugin {
     fn process(&self, svg: &mut Svg) -> Result<Svg, Box<dyn Error>> {
         let mut svg_clone = svg.clone();
 
-        // Process all children of the root SVG element
+        // A stylesheet can attach paint, clipping or filters to any element.
+        if contains_element(&svg_clone.root, "style") {
+            return Ok(svg_clone);
+        }
+        // A <use> can pass an inherited stroke width to what it references, and a
+        // marker is sized by the coordinate system of the element it is drawn on.
+        let scale_safe = !contains_element(&svg_clone.root, "use") && !has_markers(&svg_clone.root);
+        // A stroke set on the root <svg> is inherited by everything.
+        let root_stroked = is_stroked(&svg_clone.root);
+
         for child in svg_clone.root.children.iter_mut() {
             if let Some(child_el) = child.as_mut_element() {
-                Self::apply_transforms_recursive(child_el);
+                Self::apply_recursive(child_el, scale_safe, root_stroked);
             }
         }
 
@@ -499,147 +321,86 @@ impl WholeSVGPluginTrait for ApplyTransformsPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::path::Path;
 
-    fn approx_eq(a: f32, b: f32) -> bool {
-        (a - b).abs() < 1e-3
+    fn run(input: &str) -> String {
+        let mut svg = Svg::from_string(&input.to_string()).unwrap();
+        ApplyTransformsPlugin.process(&mut svg).unwrap().to_string()
     }
 
-    /// Translating an Arc command with two chained arc segments must move
-    /// the endpoint of BOTH segments, not just the first.
     #[test]
-    fn translate_multi_arc_moves_all_endpoints() {
-        // Two chained arcs: A rx ry rot flag flag x1 y1 rx ry rot flag flag x2 y2
-        let mut path = Path::new("M 0 0 A 10 10 0 0 1 20 30 10 10 0 0 0 40 50 Z");
-        ApplyTransformsPlugin::apply_translation(&mut path, 100.0, 200.0);
-
-        let arc = &path.commands[1];
-        // First arc endpoint: (20+100, 30+200) = (120, 230)
-        assert!(
-            approx_eq(arc.values[5], 120.0),
-            "first arc x: {}",
-            arc.values[5]
-        );
-        assert!(
-            approx_eq(arc.values[6], 230.0),
-            "first arc y: {}",
-            arc.values[6]
-        );
-        // Second arc endpoint: (40+100, 50+200) = (140, 250)
-        assert!(
-            approx_eq(arc.values[12], 140.0),
-            "second arc x: {}",
-            arc.values[12]
-        );
-        assert!(
-            approx_eq(arc.values[13], 250.0),
-            "second arc y: {}",
-            arc.values[13]
-        );
-        // Radii and flags must be unchanged
-        assert!(approx_eq(arc.values[0], 10.0));
-        assert!(approx_eq(arc.values[3], 0.0)); // large-arc flag
-        assert!(approx_eq(arc.values[4], 1.0)); // sweep flag
+    fn bakes_translate_into_path() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><path transform="translate(10 20)" d="M0 0 L5 5"/></svg>"##);
+        assert!(!out.contains("transform"));
+        assert!(out.contains("M10 20l5 5"), "{}", out);
     }
 
-    /// Scaling an Arc command with two chained arc segments must scale
-    /// rx, ry, and the endpoint of BOTH segments.
     #[test]
-    fn scale_multi_arc_scales_all_segments() {
-        let mut path = Path::new("M 0 0 A 10 20 0 0 1 30 40 5 6 0 1 0 70 80 Z");
-        ApplyTransformsPlugin::apply_scale(&mut path, 2.0, 3.0);
-
-        let arc = &path.commands[1];
-        // First arc: rx*2=20, ry*3=60, x*2=60, y*3=120
-        assert!(
-            approx_eq(arc.values[0], 20.0),
-            "first rx: {}",
-            arc.values[0]
-        );
-        assert!(
-            approx_eq(arc.values[1], 60.0),
-            "first ry: {}",
-            arc.values[1]
-        );
-        assert!(approx_eq(arc.values[5], 60.0), "first x: {}", arc.values[5]);
-        assert!(
-            approx_eq(arc.values[6], 120.0),
-            "first y: {}",
-            arc.values[6]
-        );
-        // Flags must be unchanged
-        assert!(approx_eq(arc.values[3], 0.0)); // large-arc flag
-        assert!(approx_eq(arc.values[4], 1.0)); // sweep flag
-                                                // Second arc: rx*2=10, ry*3=18, x*2=140, y*3=240
-        assert!(
-            approx_eq(arc.values[7], 10.0),
-            "second rx: {}",
-            arc.values[7]
-        );
-        assert!(
-            approx_eq(arc.values[8], 18.0),
-            "second ry: {}",
-            arc.values[8]
-        );
-        assert!(
-            approx_eq(arc.values[12], 140.0),
-            "second x: {}",
-            arc.values[12]
-        );
-        assert!(
-            approx_eq(arc.values[13], 240.0),
-            "second y: {}",
-            arc.values[13]
-        );
-        // Second arc flags unchanged
-        assert!(approx_eq(arc.values[10], 1.0)); // large-arc flag
-        assert!(approx_eq(arc.values[11], 0.0)); // sweep flag
+    fn keeps_rotation_untouched() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><path transform="rotate(30) translate(5 0)" d="M0 0 L5 5"/></svg>"##);
+        assert!(out.contains("rotate(30) translate(5 0)"));
     }
 
-    /// Regression test for the specific path from undraw_file-analysis_nbtc.svg.
-    /// The path has a sub-path starting with 'm' (relative move) followed by two
-    /// chained absolute 'A' arcs. Translation must be applied to both arc endpoints.
     #[test]
-    fn translate_real_world_multi_arc_path() {
-        // Simplified version of the problematic sub-path:
-        // m-.07,36.631 A17.4 17.4 0 1 0 245.5,608.594 17.4 17.4 0 0 0 262.863,626.027 Z
-        // with translate(368.984, 161.693)
-        let d = "M 262.933 589.4 a 19.232 19.232 0 1 1 -19.268 19.195 \
-                 A 19.232 19.232 0 0 1 262.933 589.4 Z \
-                 m -0.07 36.631 \
-                 A 17.4 17.4 0 1 0 245.5 608.594 17.4 17.4 0 0 0 262.863 626.027 Z";
-        let mut path = Path::new(d);
-        ApplyTransformsPlugin::apply_translation(&mut path, 368.984, 161.693);
+    fn mirror_flips_arc_sweep() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><path transform="scale(-1 1)" d="M0 0 A10 10 0 0 1 20 0"/></svg>"##);
+        assert!(!out.contains("transform"));
+        // Sweep flag 1 becomes 0 after a mirror.
+        assert!(out.contains("A10 10 0 00-20 0"), "{}", out);
+    }
 
-        // Find the second A command (the one after 'm')
-        // Commands: M, a, A, m, A, Z
-        let a_cmd = path
-            .commands
-            .iter()
-            .find(|c| c.command_type == crate::path::PathCommandType::Arc && c.values.len() >= 14)
-            .expect("should find multi-arc A command");
+    #[test]
+    fn rect_with_units_is_not_rewritten() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><rect transform="translate(5 5)" x="10%" width="5" height="5"/></svg>"##);
+        assert!(out.contains("transform=\"translate(5 5)\""));
+    }
 
-        // First endpoint: 245.5 + 368.984 = 614.484, 608.594 + 161.693 = 770.287
-        assert!(
-            approx_eq(a_cmd.values[5], 614.484),
-            "first x: {}",
-            a_cmd.values[5]
-        );
-        assert!(
-            approx_eq(a_cmd.values[6], 770.287),
-            "first y: {}",
-            a_cmd.values[6]
-        );
-        // Second endpoint: 262.863 + 368.984 = 631.847, 626.027 + 161.693 = 787.72
-        assert!(
-            approx_eq(a_cmd.values[12], 631.847),
-            "second x: {}",
-            a_cmd.values[12]
-        );
-        assert!(
-            approx_eq(a_cmd.values[13], 787.72),
-            "second y: {}",
-            a_cmd.values[13]
-        );
+    #[test]
+    fn circle_with_units_does_not_panic() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><circle transform="translate(5 5)" cx="10px" r="5"/></svg>"##);
+        assert!(out.contains("transform"));
+    }
+
+    #[test]
+    fn rounded_rect_not_scaled() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><rect transform="scale(2)" width="10" height="10" rx="3"/></svg>"##);
+        assert!(out.contains("transform=\"scale(2)\""));
+    }
+
+    #[test]
+    fn scale_skipped_for_stroked_element() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><path transform="scale(4)" stroke="#000" stroke-width="2" d="M0 0 L5 5"/></svg>"##);
+        assert!(out.contains("transform=\"scale(4)\""));
+    }
+
+    #[test]
+    fn clipped_element_not_baked() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><path transform="translate(5 5)" clip-path="url(#c)" d="M0 0 L5 5"/></svg>"##);
+        assert!(out.contains("translate(5 5)"));
+    }
+
+    #[test]
+    fn group_transform_pushed_to_children() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><g transform="translate(10 0)"><path transform="scale(2)" d="M0 0 L5 5"/></g></svg>"##);
+        assert!(!out.contains("<g transform"));
+        assert!(out.contains("M10 0L20 10"), "{}", out);
+    }
+
+    #[test]
+    fn root_stroke_blocks_scale_baking() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg" stroke="#000"><path transform="scale(4)" d="M0 0 L5 5"/></svg>"##);
+        assert!(out.contains("transform=\"scale(4)\""), "{}", out);
+    }
+
+    #[test]
+    fn push_down_skips_clip_path_children() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><g transform="translate(10 0)"><clipPath id="c"><rect width="5" height="5"/></clipPath><path d="M0 0 L5 5"/></g></svg>"##);
+        assert!(out.contains("<clipPath id=\"c\"><rect"), "{}", out);
+        assert!(!out.contains("<clipPath id=\"c\" transform"), "{}", out);
+    }
+
+    #[test]
+    fn group_with_clip_keeps_transform() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><g transform="translate(10 0)" clip-path="url(#c)"><path d="M0 0 L5 5"/></g></svg>"##);
+        assert!(out.contains("transform=\"translate(10 0)\""));
     }
 }

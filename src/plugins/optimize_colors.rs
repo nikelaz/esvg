@@ -16,15 +16,16 @@ use xmltree::Element;
 
 const COLOR_ATTRIBUTES: [&str; 4] = ["fill", "stroke", "stop-color", "color"];
 
+// Replacements must keep the exact colour. CSS `green` is #008000, not #0f0.
 static STATIC_REPLACEMENTS: &[(&str, &str)] = &[
     ("black", "#000"),
     ("white", "#fff"),
-    ("green", "#0f0"),
     ("blue", "#00f"),
     ("cyan", "#0ff"),
     ("magenta", "#f0f"),
     ("yellow", "#ff0"),
     ("#ff0000", "red"),
+    ("#008000", "green"),
 ];
 
 pub struct OptimizeColorsPlugin;
@@ -64,9 +65,17 @@ impl OptimizeColorsPlugin {
     }
 
     fn optimize_color_value(color_value: &str) -> String {
-        let color_value = color_value.to_ascii_lowercase();
+        let trimmed = color_value.trim();
+
+        // Paint servers and keywords are not colours to rewrite. url() ids are
+        // case-sensitive, so the value must not be lowercased.
+        if trimmed.contains("url(") || !trimmed.starts_with('#') && !Self::is_named_color(trimmed) {
+            return color_value.to_string();
+        }
+
+        let color_lower = trimmed.to_ascii_lowercase();
         let color_normalized =
-            Self::normalize_hex_color(&color_value).unwrap_or(color_value.to_string());
+            Self::normalize_hex_color(&color_lower).unwrap_or(color_lower.to_string());
 
         for &(key, value) in STATIC_REPLACEMENTS {
             if key == color_normalized {
@@ -74,9 +83,12 @@ impl OptimizeColorsPlugin {
             }
         }
 
-        Self::optimize_hex_color(&color_normalized)
-            .unwrap_or(color_value)
-            .to_string()
+        Self::optimize_hex_color(&color_normalized).unwrap_or(color_lower)
+    }
+
+    /// Named colours are case-insensitive keywords in CSS.
+    fn is_named_color(value: &str) -> bool {
+        value.chars().all(|c| c.is_ascii_alphabetic())
     }
 
     fn optimize_color_attributes(element: &mut Element) {

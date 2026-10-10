@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <style>#xy{fill:#e00} #x{fill:#00e} .cls-1{fill:#090}</style>
+  <rect id="xy" x="10" y="10" width="80" height="80"/>
+  <rect id="x" x="110" y="110" width="80" height="80"/>
+  <rect class="cls-1" x="110" y="10" width="80" height="80"/>
+  <rect class="cls-10" x="10" y="110" width="80" height="80" style="fill:#abc"/>
+</svg>

@@ -53,13 +53,16 @@ impl Arbiter {
         single_plugin: &Box<dyn SingleElementPluginTrait>,
     ) -> Result<(), Box<dyn Error>> {
         for node in &mut element.children {
-            let mut element = node.as_mut_element().unwrap();
-            if is_container_element(&element) {
+            // Text, comments and whitespace between elements are not processed.
+            let Some(element) = node.as_mut_element() else {
+                continue;
+            };
+            if is_container_element(element) {
                 let _ = Arbiter::process_child_elements(element, single_plugin);
             }
-            let element_plugin_result = single_plugin.process(&mut element)?;
+            let element_plugin_result = single_plugin.process(element)?;
             if element_to_string(&element_plugin_result).unwrap().len()
-                < element_to_string(&element).unwrap().len()
+                < element_to_string(element).unwrap().len()
             {
                 *element = element_plugin_result;
             }

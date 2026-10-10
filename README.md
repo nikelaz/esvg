@@ -21,3 +21,15 @@ This approach ensures that only the most effective transformations are applied, 
 
 **This project is in very early development. Most of the features are not implemented and it cannot be used effectively for any optimization.**
 
+
+## Testing
+
+- `cargo test` runs the unit tests and `tests/corpus.rs`, which optimizes every SVG in `tests/cases` and `tests/corpus` and checks that the output parses and is not larger than the input.
+- `tests/visual/run.py` checks that the output still looks the same. It renders each original and optimized file with `resvg` and `rsvg-convert`, compares the pixels, and reports the size change. It needs both renderers on `PATH` and the standard library only.
+
+```sh
+cargo build --release
+tests/visual/run.py
+```
+
+`tests/cases` holds hand-written edge cases (CC0). `tests/corpus` holds public-domain SVGs from Wikimedia Commons, listed with their licenses in `tests/corpus/SOURCES.md`.

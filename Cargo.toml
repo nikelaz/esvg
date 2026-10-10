@@ -13,6 +13,5 @@ name = "esvg-rs"
 path = "src/main.rs"
 
 [dependencies]
-css-structs = "1.0.1"
 regex = "1.11.1"
 xmltree = "0.11.0"

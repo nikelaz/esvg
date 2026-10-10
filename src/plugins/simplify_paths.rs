@@ -4,797 +4,206 @@
 // Author: Nikola Lazarov
 //
 // Description:
-// Optimizes SVG path data by performing structural simplifications:
-// - Convert curves to lines when control points are collinear (straight curves)
-// - Convert L to H/V line shorthands when appropriate
-// - Remove zero-length segments (l 0 0, h 0, v 0, etc.)
-// - Convert final line-to-start into closepath (Z)
-// - Collapse consecutive same-type commands (h 10 h 20 -> h 30)
-// - Convert cubic curves to smooth shorthands (C -> S) when applicable
-// - Convert quadratic curves to smooth shorthands (Q -> T) when applicable
+// Rewrites path data into a shorter form that draws exactly the same thing:
+// - Curves whose control points lie on the chord, in order, become lines
+// - Arcs with a zero radius become lines, arcs with equal endpoints are dropped
+// - Zero-length segments are removed (unless they are the only content of a
+//   subpath, where round or square caps still draw a dot)
+// - A line back to the subpath start that is immediately closed with Z is dropped
+// - Shorthands (H, V, S, T), relative/absolute choice and implicit repetition
+//   are applied on output
+//
+// When markers can be drawn (`keep_vertices`), nothing is removed: markers are
+// placed on every vertex, so dropping a segment would drop or move a marker.
+// Curves and arcs are still straightened, which keeps their vertices.
+//
+// Path data that does not parse is left untouched.
 
-use crate::path::{Path, PathCommand, PathCommandType};
+use crate::path::{Path, Segment};
 use crate::plugin::SingleElementPluginTrait;
 use std::error::Error;
 use xmltree::Element;
 
-/// Tolerance for floating-point comparisons
-const EPSILON: f32 = 1e-4;
+/// Absolute distance under which two coordinates are treated as the same point.
+const EPSILON: f64 = 1e-6;
 
-pub struct SimplifyPathsPlugin {}
-
-/// Checks if a value is effectively zero
-fn is_zero(v: f32) -> bool {
-    v.abs() < EPSILON
+pub struct SimplifyPathsPlugin {
+    /// Keep every vertex, because markers may be drawn on them.
+    pub keep_vertices: bool,
 }
 
-/// Checks if two values are approximately equal
-fn approx_eq(a: f32, b: f32) -> bool {
-    (a - b).abs() < EPSILON
+type Point = (f64, f64);
+
+fn same_point(a: Point, b: Point) -> bool {
+    (a.0 - b.0).abs() < EPSILON && (a.1 - b.1).abs() < EPSILON
 }
 
-/// Computes the perpendicular distance from point (px, py) to the line from (x1, y1) to (x2, y2).
-/// Used to detect if a curve's control points lie on the straight line from start to end.
-fn point_to_line_distance(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-    let dx = x2 - x1;
-    let dy = y2 - y1;
-    let line_len_sq = dx * dx + dy * dy;
-
-    if line_len_sq < EPSILON * EPSILON {
-        // Start and end are the same point — distance is just point-to-point
-        let dpx = px - x1;
-        let dpy = py - y1;
-        return (dpx * dpx + dpy * dpy).sqrt();
-    }
-
-    // Perpendicular distance = |cross product| / |line length|
-    ((dy * px - dx * py + x2 * y1 - y2 * x1).abs()) / line_len_sq.sqrt()
-}
-
-/// Resolves the absolute endpoint of a command given the current cursor position.
-/// Returns (end_x, end_y) after this command executes.
-fn get_absolute_endpoint(cmd: &PathCommand, cursor_x: f32, cursor_y: f32) -> (f32, f32) {
-    let v = &cmd.values;
-    match cmd.command_type {
-        PathCommandType::MoveTo | PathCommandType::LineTo => {
-            if v.len() >= 2 {
-                (v[0], v[1])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::MoveToRelative | PathCommandType::LineToRelative => {
-            if v.len() >= 2 {
-                (cursor_x + v[0], cursor_y + v[1])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::HorizontalLine => {
-            if v.len() >= 1 {
-                (v[0], cursor_y)
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::HorizontalLineRelative => {
-            if v.len() >= 1 {
-                (cursor_x + v[0], cursor_y)
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::VerticalLine => {
-            if v.len() >= 1 {
-                (cursor_x, v[0])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::VerticalLineRelative => {
-            if v.len() >= 1 {
-                (cursor_x, cursor_y + v[0])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::CubicBezierCurve => {
-            // C x1 y1 x2 y2 x y
-            if v.len() >= 6 {
-                (v[4], v[5])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::CubicBezierCurveRelative => {
-            if v.len() >= 6 {
-                (cursor_x + v[4], cursor_y + v[5])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::AdditionalBezierCurve => {
-            // S x2 y2 x y
-            if v.len() >= 4 {
-                (v[2], v[3])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::AdditionalBezierCurveRelative => {
-            if v.len() >= 4 {
-                (cursor_x + v[2], cursor_y + v[3])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::QuadraticBezierCurve => {
-            // Q x1 y1 x y
-            if v.len() >= 4 {
-                (v[2], v[3])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::QuadraticBezierCurveRelative => {
-            if v.len() >= 4 {
-                (cursor_x + v[2], cursor_y + v[3])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::AdditionalQuadraticBezierCurve => {
-            // T x y
-            if v.len() >= 2 {
-                (v[0], v[1])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::AdditionalQuadraticBezierCurveRelative => {
-            if v.len() >= 2 {
-                (cursor_x + v[0], cursor_y + v[1])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::Arc => {
-            // A rx ry x-rotation large-arc sweep x y
-            if v.len() >= 7 {
-                (v[5], v[6])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::ArcRelative => {
-            if v.len() >= 7 {
-                (cursor_x + v[5], cursor_y + v[6])
-            } else {
-                (cursor_x, cursor_y)
-            }
-        }
-        PathCommandType::Close | PathCommandType::CloseAlternate => {
-            // Close returns to subpath start — handled externally
-            (cursor_x, cursor_y)
-        }
-    }
-}
-
-/// Checks if a cubic bezier curve is actually a straight line.
-/// A cubic C x1 y1 x2 y2 x y is straight when both control points
-/// (x1,y1) and (x2,y2) lie on the line from (start) to (x,y).
-fn is_cubic_straight(start_x: f32, start_y: f32, values: &[f32], is_relative: bool) -> bool {
-    if values.len() < 6 {
+/// True when a cubic or quadratic curve from `start` through `controls` to `end`
+/// is a straight line that it traces exactly once, from start to end.
+///
+/// That holds when every control point lies on the chord and the control
+/// points are ordered along it. Collinear control points that overshoot the
+/// chord are not straight: the curve doubles back and paints more than the line.
+fn is_straight(start: Point, controls: &[Point], end: Point) -> bool {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    let length = (dx * dx + dy * dy).sqrt();
+    if length < EPSILON {
         return false;
     }
+    let (ux, uy) = (dx / length, dy / length);
 
-    let (cp1x, cp1y, cp2x, cp2y, end_x, end_y) = if is_relative {
-        (
-            start_x + values[0],
-            start_y + values[1],
-            start_x + values[2],
-            start_y + values[3],
-            start_x + values[4],
-            start_y + values[5],
-        )
+    let mut last = 0.0f64;
+    for &(px, py) in controls {
+        let rx = px - start.0;
+        let ry = py - start.1;
+        let along = rx * ux + ry * uy;
+        let across = rx * uy - ry * ux;
+        if across.abs() > EPSILON {
+            return false;
+        }
+        if along < -EPSILON || along > length + EPSILON || along < last - EPSILON {
+            return false;
+        }
+        last = along;
+    }
+    true
+}
+
+/// Converts curves and arcs that draw a straight line into `Line` segments.
+fn straighten(segments: &[Segment]) -> Vec<Segment> {
+    let mut out = Vec::with_capacity(segments.len());
+    let mut cur: Point = (0.0, 0.0);
+    let mut subpath_start: Point = (0.0, 0.0);
+
+    for seg in segments {
+        let replacement = match *seg {
+            Segment::Cubic { x1, y1, x2, y2, x, y } => {
+                if is_straight(cur, &[(x1, y1), (x2, y2)], (x, y)) {
+                    Segment::Line { x, y }
+                } else {
+                    *seg
+                }
+            }
+            Segment::Quad { x1, y1, x, y } => {
+                if is_straight(cur, &[(x1, y1)], (x, y)) {
+                    Segment::Line { x, y }
+                } else {
+                    *seg
+                }
+            }
+            // An arc with a zero radius is drawn as a straight line.
+            Segment::Arc { rx, ry, x, y, .. } if rx == 0.0 || ry == 0.0 => Segment::Line { x, y },
+            _ => *seg,
+        };
+
+        if let Segment::Move { x, y } = replacement {
+            subpath_start = (x, y);
+        }
+        cur = replacement.end_point(subpath_start);
+        out.push(replacement);
+    }
+
+    out
+}
+
+/// True when a segment starts and ends at `cur` and draws nothing.
+fn is_zero_length(seg: &Segment, cur: Point) -> bool {
+    match *seg {
+        Segment::Line { x, y } => same_point((x, y), cur),
+        Segment::Cubic { x1, y1, x2, y2, x, y } => {
+            same_point((x, y), cur) && same_point((x1, y1), cur) && same_point((x2, y2), cur)
+        }
+        Segment::Quad { x1, y1, x, y } => {
+            same_point((x, y), cur) && same_point((x1, y1), cur)
+        }
+        // An arc whose endpoints coincide is omitted by the spec.
+        Segment::Arc { x, y, .. } => same_point((x, y), cur),
+        _ => false,
+    }
+}
+
+/// Removes segments that draw nothing and lines that a `Z` already draws.
+fn remove_redundant(segments: Vec<Segment>) -> Vec<Segment> {
+    // Split into subpaths so the "only content" rule can be applied per subpath.
+    let mut subpaths: Vec<Vec<Segment>> = Vec::new();
+    for seg in segments {
+        if let Segment::Move { .. } = seg {
+            subpaths.push(vec![seg]);
+        } else if let Some(current) = subpaths.last_mut() {
+            current.push(seg);
+        } else {
+            subpaths.push(vec![seg]);
+        }
+    }
+
+    let mut out = Vec::new();
+    for subpath in subpaths {
+        // Replay the subpath to know where each segment starts.
+        let mut cur: Point = (0.0, 0.0);
+        let mut start: Point = (0.0, 0.0);
+        let mut zero_flags = Vec::with_capacity(subpath.len());
+        for seg in &subpath {
+            zero_flags.push(is_zero_length(seg, cur));
+            if let Segment::Move { x, y } = *seg {
+                start = (x, y);
+            }
+            cur = seg.end_point(start);
+        }
+
+        // A subpath whose only drawing is zero-length keeps it, since caps draw.
+        let has_real_drawing = subpath
+            .iter()
+            .zip(&zero_flags)
+            .any(|(seg, &zero)| !zero && !matches!(seg, Segment::Move { .. } | Segment::Close));
+        let keep_zero = !has_real_drawing;
+
+        let mut kept: Vec<Segment> = Vec::with_capacity(subpath.len());
+        let mut cur: Point = (0.0, 0.0);
+        let mut start: Point = (0.0, 0.0);
+        for (index, seg) in subpath.iter().enumerate() {
+            let zero = zero_flags[index];
+            let at_start_before = same_point(cur, start);
+            if let Segment::Move { x, y } = *seg {
+                start = (x, y);
+            }
+
+            let drop_zero = zero && !keep_zero && !matches!(seg, Segment::Move { .. });
+            // A line to the start point followed by Z adds nothing: Z draws it.
+            let drop_closing_line = matches!(seg, Segment::Line { .. })
+                && same_point(seg.end_point(start), start)
+                && !at_start_before
+                && matches!(subpath.get(index + 1), Some(Segment::Close));
+
+            if !drop_zero && !drop_closing_line {
+                kept.push(*seg);
+            }
+            cur = seg.end_point(start);
+        }
+        out.extend(kept);
+    }
+
+    out
+}
+
+/// Runs the optimization passes over absolute segments.
+fn optimize(segments: &[Segment], keep_vertices: bool) -> Vec<Segment> {
+    let straight = straighten(segments);
+    if keep_vertices {
+        straight
     } else {
-        (
-            values[0], values[1], values[2], values[3], values[4], values[5],
-        )
-    };
-
-    let d1 = point_to_line_distance(cp1x, cp1y, start_x, start_y, end_x, end_y);
-    let d2 = point_to_line_distance(cp2x, cp2y, start_x, start_y, end_x, end_y);
-
-    d1 < EPSILON && d2 < EPSILON
-}
-
-/// Checks if a quadratic bezier curve is actually a straight line.
-/// Q x1 y1 x y is straight when the control point (x1,y1) lies on
-/// the line from (start) to (x,y).
-fn is_quadratic_straight(start_x: f32, start_y: f32, values: &[f32], is_relative: bool) -> bool {
-    if values.len() < 4 {
-        return false;
+        remove_redundant(straight)
     }
-
-    let (cp_x, cp_y, end_x, end_y) = if is_relative {
-        (
-            start_x + values[0],
-            start_y + values[1],
-            start_x + values[2],
-            start_y + values[3],
-        )
-    } else {
-        (values[0], values[1], values[2], values[3])
-    };
-
-    let d = point_to_line_distance(cp_x, cp_y, start_x, start_y, end_x, end_y);
-    d < EPSILON
-}
-
-/// Checks if an arc is effectively a straight line (zero radii or zero-length).
-fn is_arc_straight(values: &[f32], is_relative: bool) -> bool {
-    if values.len() < 7 {
-        return false;
-    }
-
-    let rx = values[0];
-    let ry = values[1];
-    let dx = if is_relative { values[5] } else { values[5] }; // endpoint x
-    let dy = if is_relative { values[6] } else { values[6] }; // endpoint y
-
-    // Zero radii means it's a straight line
-    if is_zero(rx) || is_zero(ry) {
-        return true;
-    }
-
-    // Zero-length arc (endpoint == start in relative terms)
-    if is_relative && is_zero(dx) && is_zero(dy) {
-        return true;
-    }
-
-    false
 }
 
 impl SimplifyPathsPlugin {
-    /// 1. Straight curves: Convert C/c, Q/q to L/l when control points are collinear.
-    ///    Also convert arcs to lines when radii are zero.
-    fn straight_curves(&self, commands: &mut Vec<PathCommand>, cursor_positions: &[(f32, f32)]) {
-        let len = commands.len();
-        for i in 0..len {
-            let (sx, sy) = if i > 0 {
-                cursor_positions[i - 1]
-            } else {
-                (0.0, 0.0)
-            };
-
-            // Never convert a curve to a line when the next command is a smooth
-            // continuation (S/s or T/t): those commands derive their implicit first
-            // control point from the preceding curve, so removing the curve changes
-            // their shape.
-            let next_continues_smooth = i + 1 < len
-                && matches!(
-                    commands[i + 1].command_type,
-                    PathCommandType::AdditionalBezierCurve
-                        | PathCommandType::AdditionalBezierCurveRelative
-                        | PathCommandType::AdditionalQuadraticBezierCurve
-                        | PathCommandType::AdditionalQuadraticBezierCurveRelative
-                );
-            if next_continues_smooth {
-                continue;
-            }
-
-            match commands[i].command_type {
-                PathCommandType::CubicBezierCurve => {
-                    if is_cubic_straight(sx, sy, &commands[i].values, false) {
-                        let end = [commands[i].values[4], commands[i].values[5]];
-                        commands[i].command_type = PathCommandType::LineTo;
-                        commands[i].values = end.to_vec();
-                    }
-                }
-                PathCommandType::CubicBezierCurveRelative => {
-                    if is_cubic_straight(sx, sy, &commands[i].values, true) {
-                        let end = [commands[i].values[4], commands[i].values[5]];
-                        commands[i].command_type = PathCommandType::LineToRelative;
-                        commands[i].values = end.to_vec();
-                    }
-                }
-                PathCommandType::QuadraticBezierCurve => {
-                    if is_quadratic_straight(sx, sy, &commands[i].values, false) {
-                        let end = [commands[i].values[2], commands[i].values[3]];
-                        commands[i].command_type = PathCommandType::LineTo;
-                        commands[i].values = end.to_vec();
-                    }
-                }
-                PathCommandType::QuadraticBezierCurveRelative => {
-                    if is_quadratic_straight(sx, sy, &commands[i].values, true) {
-                        let end = [commands[i].values[2], commands[i].values[3]];
-                        commands[i].command_type = PathCommandType::LineToRelative;
-                        commands[i].values = end.to_vec();
-                    }
-                }
-                PathCommandType::Arc => {
-                    if is_arc_straight(&commands[i].values, false) {
-                        let end = [commands[i].values[5], commands[i].values[6]];
-                        commands[i].command_type = PathCommandType::LineTo;
-                        commands[i].values = end.to_vec();
-                    }
-                }
-                PathCommandType::ArcRelative => {
-                    if is_arc_straight(&commands[i].values, true) {
-                        let end = [commands[i].values[5], commands[i].values[6]];
-                        commands[i].command_type = PathCommandType::LineToRelative;
-                        commands[i].values = end.to_vec();
-                    }
-                }
-                _ => {}
-            }
+    fn simplify(d: &str, keep_vertices: bool) -> Option<String> {
+        let path = Path::parse(d)?;
+        let segments = path.segments()?;
+        if segments.is_empty() {
+            return None;
         }
-    }
-
-    /// 2. Line shorthands: Convert L/l to H/h or V/v when one axis doesn't change.
-    fn line_shorthands(&self, commands: &mut Vec<PathCommand>, cursor_positions: &[(f32, f32)]) {
-        for (i, cmd) in commands.iter_mut().enumerate() {
-            let (sx, sy) = if i > 0 {
-                cursor_positions[i - 1]
-            } else {
-                (0.0, 0.0)
-            };
-
-            match cmd.command_type {
-                PathCommandType::LineTo => {
-                    let end_x = cmd.values[0];
-                    let end_y = cmd.values[1];
-                    if approx_eq(end_y, sy) {
-                        // Horizontal line
-                        cmd.command_type = PathCommandType::HorizontalLine;
-                        cmd.values = vec![end_x];
-                    } else if approx_eq(end_x, sx) {
-                        // Vertical line
-                        cmd.command_type = PathCommandType::VerticalLine;
-                        cmd.values = vec![end_y];
-                    }
-                }
-                PathCommandType::LineToRelative => {
-                    let dx = cmd.values[0];
-                    let dy = cmd.values[1];
-                    if is_zero(dy) {
-                        cmd.command_type = PathCommandType::HorizontalLineRelative;
-                        cmd.values = vec![dx];
-                    } else if is_zero(dx) {
-                        cmd.command_type = PathCommandType::VerticalLineRelative;
-                        cmd.values = vec![dy];
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// 3. Remove useless: Remove zero-length segments that don't move the cursor.
-    fn remove_useless(&self, commands: &mut Vec<PathCommand>) {
-        commands.retain(|cmd| {
-            match cmd.command_type {
-                PathCommandType::LineToRelative => {
-                    // l 0 0 — does nothing
-                    !(cmd.values.len() >= 2 && is_zero(cmd.values[0]) && is_zero(cmd.values[1]))
-                }
-                PathCommandType::HorizontalLineRelative => {
-                    // h 0 — does nothing
-                    !(cmd.values.len() >= 1 && is_zero(cmd.values[0]))
-                }
-                PathCommandType::VerticalLineRelative => {
-                    // v 0 — does nothing
-                    !(cmd.values.len() >= 1 && is_zero(cmd.values[0]))
-                }
-                PathCommandType::CubicBezierCurveRelative => {
-                    // c 0 0 0 0 0 0 — does nothing
-                    cmd.values.len() < 6 || !cmd.values.iter().all(|v| is_zero(*v))
-                }
-                PathCommandType::QuadraticBezierCurveRelative => {
-                    // q 0 0 0 0 — does nothing
-                    cmd.values.len() < 4 || !cmd.values.iter().all(|v| is_zero(*v))
-                }
-                PathCommandType::AdditionalBezierCurveRelative => {
-                    // s 0 0 0 0 — does nothing
-                    cmd.values.len() < 4 || !cmd.values.iter().all(|v| is_zero(*v))
-                }
-                PathCommandType::AdditionalQuadraticBezierCurveRelative => {
-                    // t 0 0 — does nothing
-                    cmd.values.len() < 2 || !cmd.values.iter().all(|v| is_zero(*v))
-                }
-                PathCommandType::ArcRelative => {
-                    // a with zero endpoint delta — does nothing
-                    if cmd.values.len() >= 7 {
-                        !(is_zero(cmd.values[5]) && is_zero(cmd.values[6]))
-                    } else {
-                        true
-                    }
-                }
-                // Also remove absolute zero-length segments (L to same point is handled
-                // differently — we'd need cursor tracking, so we skip absolute for safety)
-                _ => true,
-            }
-        });
-    }
-
-    /// 4. Convert to Z: If the last drawing command before a Z (or at end of path)
-    ///    is a line back to the subpath start, replace it with Z.
-    fn convert_to_z(&self, commands: &mut Vec<PathCommand>) {
-        if commands.len() < 2 {
-            return;
-        }
-
-        // Track subpath starts
-        let mut subpath_start_x: f32 = 0.0;
-        let mut subpath_start_y: f32 = 0.0;
-        let mut cursor_x: f32 = 0.0;
-        let mut cursor_y: f32 = 0.0;
-        let mut indices_to_replace: Vec<usize> = Vec::new();
-
-        for i in 0..commands.len() {
-            let cmd = &commands[i];
-
-            match cmd.command_type {
-                PathCommandType::MoveTo => {
-                    subpath_start_x = cmd.values[0];
-                    subpath_start_y = cmd.values[1];
-                    cursor_x = subpath_start_x;
-                    cursor_y = subpath_start_y;
-                }
-                PathCommandType::MoveToRelative => {
-                    subpath_start_x = cursor_x + cmd.values[0];
-                    subpath_start_y = cursor_y + cmd.values[1];
-                    cursor_x = subpath_start_x;
-                    cursor_y = subpath_start_y;
-                }
-                PathCommandType::Close | PathCommandType::CloseAlternate => {
-                    cursor_x = subpath_start_x;
-                    cursor_y = subpath_start_y;
-                }
-                _ => {
-                    let (end_x, end_y) = get_absolute_endpoint(cmd, cursor_x, cursor_y);
-
-                    // Check if this line goes back to subpath start and is followed by Z or is the last command
-                    let is_line = matches!(
-                        cmd.command_type,
-                        PathCommandType::LineTo
-                            | PathCommandType::LineToRelative
-                            | PathCommandType::HorizontalLine
-                            | PathCommandType::HorizontalLineRelative
-                            | PathCommandType::VerticalLine
-                            | PathCommandType::VerticalLineRelative
-                    );
-
-                    if is_line
-                        && approx_eq(end_x, subpath_start_x)
-                        && approx_eq(end_y, subpath_start_y)
-                    {
-                        // Check if next command is Z or this is the last command
-                        let next_is_z = if i + 1 < commands.len() {
-                            matches!(
-                                commands[i + 1].command_type,
-                                PathCommandType::Close | PathCommandType::CloseAlternate
-                            )
-                        } else {
-                            false
-                        };
-
-                        if next_is_z {
-                            // Mark this line for removal (Z already follows)
-                            indices_to_replace.push(i);
-                        }
-                    }
-
-                    cursor_x = end_x;
-                    cursor_y = end_y;
-                }
-            }
-        }
-
-        // Remove the redundant line commands (iterate in reverse to preserve indices)
-        for &idx in indices_to_replace.iter().rev() {
-            commands.remove(idx);
-        }
-    }
-
-    /// 5. Collapse repeated: Merge consecutive commands of the same type.
-    ///    h 10 h 20 -> h 30, v 5 v 10 -> v 15, etc.
-    fn collapse_repeated(&self, commands: &mut Vec<PathCommand>) {
-        if commands.len() < 2 {
-            return;
-        }
-
-        let mut result: Vec<PathCommand> = Vec::with_capacity(commands.len());
-
-        for cmd in commands.drain(..) {
-            if let Some(last) = result.last_mut() {
-                let merged = match (&last.command_type, &cmd.command_type) {
-                    // h + h -> h (sum)
-                    (
-                        PathCommandType::HorizontalLineRelative,
-                        PathCommandType::HorizontalLineRelative,
-                    ) => {
-                        if last.values.len() >= 1 && cmd.values.len() >= 1 {
-                            last.values[0] += cmd.values[0];
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    // v + v -> v (sum)
-                    (
-                        PathCommandType::VerticalLineRelative,
-                        PathCommandType::VerticalLineRelative,
-                    ) => {
-                        if last.values.len() >= 1 && cmd.values.len() >= 1 {
-                            last.values[0] += cmd.values[0];
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    // H + H -> H (last wins, since absolute)
-                    (PathCommandType::HorizontalLine, PathCommandType::HorizontalLine) => {
-                        if cmd.values.len() >= 1 {
-                            last.values = cmd.values.clone();
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    // V + V -> V (last wins, since absolute)
-                    (PathCommandType::VerticalLine, PathCommandType::VerticalLine) => {
-                        if cmd.values.len() >= 1 {
-                            last.values = cmd.values.clone();
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
-                };
-
-                if !merged {
-                    result.push(cmd);
-                }
-            } else {
-                result.push(cmd);
-            }
-        }
-
-        *commands = result;
-    }
-
-    /// 6. Curve smooth shorthands: Convert C->S and Q->T when the first control point
-    ///    is the reflection of the previous curve's last control point.
-    fn curve_smooth_shorthands(
-        &self,
-        commands: &mut Vec<PathCommand>,
-        cursor_positions: &[(f32, f32)],
-    ) {
-        // Track cubic and quadratic smooth chains independently.
-        // Mixing them (e.g. Q after C) must not carry over the cubic cp2 as quadratic
-        // context: C->S is a cubic chain, Q->T is a separate quadratic chain.
-        let mut prev_cubic_cp2: Option<(f32, f32)> = None;
-        let mut prev_quadratic_cp1: Option<(f32, f32)> = None;
-
-        for (i, cmd) in commands.iter_mut().enumerate() {
-            let (sx, sy) = if i > 0 {
-                cursor_positions[i - 1]
-            } else {
-                (0.0, 0.0)
-            };
-
-            match cmd.command_type {
-                PathCommandType::CubicBezierCurve => {
-                    // C x1 y1 x2 y2 x y
-                    // Can convert to S x2 y2 x y if x1,y1 is reflection of prev cubic cp2
-                    if let Some((prev_x2, prev_y2)) = prev_cubic_cp2 {
-                        let reflected_x = 2.0 * sx - prev_x2;
-                        let reflected_y = 2.0 * sy - prev_y2;
-                        if approx_eq(cmd.values[0], reflected_x)
-                            && approx_eq(cmd.values[1], reflected_y)
-                        {
-                            let x2 = cmd.values[2];
-                            let y2 = cmd.values[3];
-                            let x = cmd.values[4];
-                            let y = cmd.values[5];
-                            prev_cubic_cp2 = Some((x2, y2));
-                            prev_quadratic_cp1 = None;
-                            cmd.command_type = PathCommandType::AdditionalBezierCurve;
-                            cmd.values = vec![x2, y2, x, y];
-                            continue;
-                        }
-                    }
-                    prev_cubic_cp2 = Some((cmd.values[2], cmd.values[3]));
-                    prev_quadratic_cp1 = None;
-                }
-                PathCommandType::CubicBezierCurveRelative => {
-                    // c dx1 dy1 dx2 dy2 dx dy
-                    if let Some((prev_x2, prev_y2)) = prev_cubic_cp2 {
-                        let reflected_x = 2.0 * sx - prev_x2;
-                        let reflected_y = 2.0 * sy - prev_y2;
-                        let abs_cp1_x = sx + cmd.values[0];
-                        let abs_cp1_y = sy + cmd.values[1];
-                        if approx_eq(abs_cp1_x, reflected_x) && approx_eq(abs_cp1_y, reflected_y) {
-                            let dx2 = cmd.values[2];
-                            let dy2 = cmd.values[3];
-                            let dx = cmd.values[4];
-                            let dy = cmd.values[5];
-                            prev_cubic_cp2 = Some((sx + dx2, sy + dy2));
-                            prev_quadratic_cp1 = None;
-                            cmd.command_type = PathCommandType::AdditionalBezierCurveRelative;
-                            cmd.values = vec![dx2, dy2, dx, dy];
-                            continue;
-                        }
-                    }
-                    prev_cubic_cp2 = Some((sx + cmd.values[2], sy + cmd.values[3]));
-                    prev_quadratic_cp1 = None;
-                }
-                PathCommandType::AdditionalBezierCurve => {
-                    // S already — keep tracking cubic cp2
-                    prev_cubic_cp2 = Some((cmd.values[0], cmd.values[1]));
-                    prev_quadratic_cp1 = None;
-                }
-                PathCommandType::AdditionalBezierCurveRelative => {
-                    prev_cubic_cp2 = Some((sx + cmd.values[0], sy + cmd.values[1]));
-                    prev_quadratic_cp1 = None;
-                }
-                PathCommandType::QuadraticBezierCurve => {
-                    // Q x1 y1 x y -> T x y if x1,y1 is reflection of prev quadratic cp1
-                    if let Some((prev_cpx, prev_cpy)) = prev_quadratic_cp1 {
-                        let reflected_x = 2.0 * sx - prev_cpx;
-                        let reflected_y = 2.0 * sy - prev_cpy;
-                        if approx_eq(cmd.values[0], reflected_x)
-                            && approx_eq(cmd.values[1], reflected_y)
-                        {
-                            let x = cmd.values[2];
-                            let y = cmd.values[3];
-                            prev_quadratic_cp1 = Some((cmd.values[0], cmd.values[1]));
-                            prev_cubic_cp2 = None;
-                            cmd.command_type = PathCommandType::AdditionalQuadraticBezierCurve;
-                            cmd.values = vec![x, y];
-                            continue;
-                        }
-                    }
-                    prev_quadratic_cp1 = Some((cmd.values[0], cmd.values[1]));
-                    prev_cubic_cp2 = None;
-                }
-                PathCommandType::QuadraticBezierCurveRelative => {
-                    if let Some((prev_cpx, prev_cpy)) = prev_quadratic_cp1 {
-                        let reflected_x = 2.0 * sx - prev_cpx;
-                        let reflected_y = 2.0 * sy - prev_cpy;
-                        let abs_cp_x = sx + cmd.values[0];
-                        let abs_cp_y = sy + cmd.values[1];
-                        if approx_eq(abs_cp_x, reflected_x) && approx_eq(abs_cp_y, reflected_y) {
-                            let dx = cmd.values[2];
-                            let dy = cmd.values[3];
-                            prev_quadratic_cp1 = Some((abs_cp_x, abs_cp_y));
-                            prev_cubic_cp2 = None;
-                            cmd.command_type =
-                                PathCommandType::AdditionalQuadraticBezierCurveRelative;
-                            cmd.values = vec![dx, dy];
-                            continue;
-                        }
-                    }
-                    prev_quadratic_cp1 = Some((sx + cmd.values[0], sy + cmd.values[1]));
-                    prev_cubic_cp2 = None;
-                }
-                _ => {
-                    // Any non-curve command resets both smooth chains
-                    prev_cubic_cp2 = None;
-                    prev_quadratic_cp1 = None;
-                }
-            }
-        }
-    }
-
-    /// Compute cursor positions after each command (absolute coordinates).
-    /// Returns a vector of (x, y) positions — one per command.
-    fn compute_cursor_positions(&self, commands: &[PathCommand]) -> Vec<(f32, f32)> {
-        let mut positions = Vec::with_capacity(commands.len());
-        let mut cursor_x: f32 = 0.0;
-        let mut cursor_y: f32 = 0.0;
-        let mut subpath_start_x: f32 = 0.0;
-        let mut subpath_start_y: f32 = 0.0;
-
-        for cmd in commands {
-            match cmd.command_type {
-                PathCommandType::MoveTo => {
-                    if cmd.values.len() >= 2 {
-                        cursor_x = cmd.values[0];
-                        cursor_y = cmd.values[1];
-                        subpath_start_x = cursor_x;
-                        subpath_start_y = cursor_y;
-                    }
-                }
-                PathCommandType::MoveToRelative => {
-                    if cmd.values.len() >= 2 {
-                        cursor_x += cmd.values[0];
-                        cursor_y += cmd.values[1];
-                        subpath_start_x = cursor_x;
-                        subpath_start_y = cursor_y;
-                    }
-                }
-                PathCommandType::Close | PathCommandType::CloseAlternate => {
-                    cursor_x = subpath_start_x;
-                    cursor_y = subpath_start_y;
-                }
-                _ => {
-                    let (end_x, end_y) = get_absolute_endpoint(cmd, cursor_x, cursor_y);
-                    cursor_x = end_x;
-                    cursor_y = end_y;
-                }
-            }
-
-            positions.push((cursor_x, cursor_y));
-        }
-
-        positions
-    }
-
-    /// Returns the minimum number of values required for a command type.
-    fn min_values_for(cmd_type: &PathCommandType) -> usize {
-        match cmd_type {
-            PathCommandType::Close | PathCommandType::CloseAlternate => 0,
-            PathCommandType::HorizontalLine
-            | PathCommandType::HorizontalLineRelative
-            | PathCommandType::VerticalLine
-            | PathCommandType::VerticalLineRelative => 1,
-            PathCommandType::MoveTo
-            | PathCommandType::MoveToRelative
-            | PathCommandType::LineTo
-            | PathCommandType::LineToRelative
-            | PathCommandType::AdditionalQuadraticBezierCurve
-            | PathCommandType::AdditionalQuadraticBezierCurveRelative => 2,
-            PathCommandType::AdditionalBezierCurve
-            | PathCommandType::AdditionalBezierCurveRelative
-            | PathCommandType::QuadraticBezierCurve
-            | PathCommandType::QuadraticBezierCurveRelative => 4,
-            PathCommandType::CubicBezierCurve | PathCommandType::CubicBezierCurveRelative => 6,
-            PathCommandType::Arc | PathCommandType::ArcRelative => 7,
-        }
-    }
-
-    /// Main simplification pipeline
-    fn simplify(&self, path_data: &str) -> String {
-        let mut path = Path::new(path_data);
-
-        if path.commands.is_empty() {
-            return path.to_string();
-        }
-
-        // Skip simplification for any path that has commands with insufficient values
-        // to avoid index-out-of-bounds panics in the pipeline below.
-        for cmd in &path.commands {
-            if cmd.values.len() < Self::min_values_for(&cmd.command_type) {
-                return path.to_string();
-            }
-        }
-
-        // Phase 1: Straight curves (needs cursor positions)
-        let positions = self.compute_cursor_positions(&path.commands);
-        self.straight_curves(&mut path.commands, &positions);
-
-        // Phase 2: Line shorthands (needs updated cursor positions)
-        let positions = self.compute_cursor_positions(&path.commands);
-        self.line_shorthands(&mut path.commands, &positions);
-
-        // Phase 3: Remove useless zero-length segments
-        self.remove_useless(&mut path.commands);
-
-        // Phase 4: Convert to Z (line-to-start before Z)
-        self.convert_to_z(&mut path.commands);
-
-        // Phase 5: Collapse repeated same-type commands
-        self.collapse_repeated(&mut path.commands);
-
-        // Phase 6: Curve smooth shorthands (C->S, Q->T)
-        let positions = self.compute_cursor_positions(&path.commands);
-        self.curve_smooth_shorthands(&mut path.commands, &positions);
-
-        path.to_string()
+        Some(Path::emit(&optimize(&segments, keep_vertices), None))
     }
 }
 
@@ -802,12 +211,127 @@ impl SingleElementPluginTrait for SimplifyPathsPlugin {
     fn process(&self, element: &mut Element) -> Result<Element, Box<dyn Error>> {
         let mut element_clone = element.clone();
 
-        // Only process elements with a "d" attribute (path data)
+        // Only elements with path data; anything malformed is left alone.
         if let Some(d) = element_clone.attributes.get("d").cloned() {
-            let simplified = self.simplify(&d);
-            element_clone.attributes.insert("d".to_string(), simplified);
+            let has_own_markers = element_clone.attributes.keys().any(|k| k.starts_with("marker"));
+            if let Some(simplified) = Self::simplify(&d, self.keep_vertices || has_own_markers) {
+                // Keep the original spelling if the rewrite is not shorter.
+                if simplified.len() < d.len() {
+                    element_clone.attributes.insert("d".to_string(), simplified);
+                }
+            }
         }
 
         Ok(element_clone)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn simplify(d: &str) -> String {
+        SimplifyPathsPlugin::simplify(d, false).expect("valid path")
+    }
+
+    fn drawn(d: &str) -> Vec<Segment> {
+        optimize(&Path::parse(d).unwrap().segments().unwrap(), false)
+    }
+
+    #[test]
+    fn collinear_overshoot_is_not_straightened() {
+        // Control points lie on the x-axis but the first one lies beyond the end
+        // point, so the curve doubles back. It must stay a curve.
+        let segs = drawn("M30 60C190 60 -60 60 120 60");
+        assert!(matches!(segs[1], Segment::Cubic { .. }));
+    }
+
+    #[test]
+    fn ordered_collinear_curve_becomes_line() {
+        let segs = drawn("M0 0C10 0 20 0 30 0");
+        assert!(matches!(segs[1], Segment::Line { .. }));
+    }
+
+    #[test]
+    fn multi_segment_commands_are_not_truncated() {
+        // Every segment of a multi-pair command must survive.
+        let out = simplify("M10 10L50 10 90 10 90 50");
+        let segs = Path::parse(&out).unwrap().segments().unwrap();
+        assert_eq!(segs.len(), 4);
+        match segs[3] {
+            Segment::Line { x, y } => assert!((x - 90.0).abs() < 1e-9 && (y - 50.0).abs() < 1e-9),
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multi_curve_command_is_not_truncated() {
+        let d = "M0 0c10 -10 20 -10 30 0 10 10 20 10 30 0";
+        let before = Path::parse(d).unwrap().segments().unwrap();
+        let after = drawn(d);
+        assert_eq!(before.len(), after.len());
+    }
+
+    #[test]
+    fn zero_length_segment_kept_when_only_content() {
+        // A lone zero-length segment draws a dot with round caps; keep it.
+        let segs = drawn("M10 10 L10 10");
+        assert_eq!(segs.len(), 2);
+    }
+
+    #[test]
+    fn zero_length_segment_removed_mid_subpath() {
+        let segs = drawn("M0 0L10 0L10 0L20 0");
+        assert_eq!(segs.len(), 3);
+    }
+
+    #[test]
+    fn zero_length_smooth_segment_does_not_change_shape() {
+        // A zero-length s followed by S must render the same as before.
+        let d = "M20 100C40 40 60 40 80 100s0 0 0 0S140 160 160 100";
+        let before = Path::parse(d).unwrap().segments().unwrap();
+        let after = Path::parse(&simplify(d)).unwrap().segments().unwrap();
+        let end_points = |segs: &[Segment]| {
+            segs.iter()
+                .filter_map(|s| match s {
+                    Segment::Cubic { x, y, .. } => Some((*x, *y)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(end_points(&before).len(), end_points(&after).len());
+        assert_eq!(before.last(), after.last());
+    }
+
+    #[test]
+    fn keeps_every_vertex_when_markers_are_possible() {
+        let d = "M0 0L10 0L10 0L10 10L0 0Z";
+        let before = Path::parse(d).unwrap().segments().unwrap();
+        let after = optimize(&before, true);
+        assert_eq!(before.len(), after.len());
+    }
+
+    #[test]
+    fn closing_line_is_dropped_before_z() {
+        let out = simplify("M0 0L10 0L10 10L0 0Z");
+        assert!(out.ends_with("Z"));
+        assert_eq!(drawn("M0 0L10 0L10 10L0 0Z").len(), 4);
+    }
+
+    #[test]
+    fn invalid_path_is_untouched() {
+        assert!(SimplifyPathsPlugin::simplify("M10", false).is_none());
+    }
+
+    #[test]
+    fn output_is_never_longer_than_input() {
+        let mut element = Element::new("path");
+        element
+            .attributes
+            .insert("d".to_string(), "M 10.0 10.0 L 20.0 10.0".to_string());
+        let out = SimplifyPathsPlugin { keep_vertices: false }
+            .process(&mut element)
+            .unwrap();
+        assert!(out.attributes["d"].len() <= "M 10.0 10.0 L 20.0 10.0".len());
     }
 }

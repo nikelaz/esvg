@@ -1,8 +1,10 @@
-use crate::path::{Path, PathCommandType};
+use crate::helpers::tree::num_attr;
+use crate::helpers::number::{parse_list, parse_plain};
+use crate::path::{Path, Segment};
 use xmltree::Element;
 
 /// Axis-aligned bounding box.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BBox {
     pub min_x: f64,
     pub min_y: f64,
@@ -20,7 +22,6 @@ impl BBox {
         }
     }
 
-    /// Returns true if both axes have non-negative extent.
     pub fn is_valid(&self) -> bool {
         self.max_x >= self.min_x && self.max_y >= self.min_y
     }
@@ -33,7 +34,14 @@ impl BBox {
             && self.max_y >= other.max_y
     }
 
-    /// Returns the smallest bbox that contains both `self` and `other`.
+    /// Returns true if the two boxes share any area or touch.
+    pub fn overlaps(&self, other: &BBox) -> bool {
+        self.min_x <= other.max_x
+            && self.max_x >= other.min_x
+            && self.min_y <= other.max_y
+            && self.max_y >= other.min_y
+    }
+
     pub fn union(&self, other: &BBox) -> BBox {
         BBox {
             min_x: self.min_x.min(other.min_x),
@@ -43,7 +51,6 @@ impl BBox {
         }
     }
 
-    /// Expand this bbox to include the point (x, y).
     fn expand_to(&mut self, x: f64, y: f64) {
         self.min_x = self.min_x.min(x);
         self.min_y = self.min_y.min(y);
@@ -52,336 +59,155 @@ impl BBox {
     }
 }
 
-/// Parse an attribute as f64, returning a default if missing or unparseable.
-fn attr_f64(element: &Element, name: &str, default: f64) -> f64 {
-    element
-        .attributes
-        .get(name)
-        .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(default)
+fn required_attr(element: &Element, name: &str) -> Option<f64> {
+    element.attributes.get(name).and_then(|v| parse_plain(v))
 }
 
-/// Parse a required attribute as f64, returning None if missing or unparseable.
-fn attr_f64_required(element: &Element, name: &str) -> Option<f64> {
-    element
-        .attributes
-        .get(name)
-        .and_then(|v| v.parse::<f64>().ok())
-}
-
-/// Compute the bounding box of a `<rect>` element.
 fn bbox_rect(element: &Element) -> Option<BBox> {
-    let x = attr_f64(element, "x", 0.0);
-    let y = attr_f64(element, "y", 0.0);
-    let width = attr_f64_required(element, "width")?;
-    let height = attr_f64_required(element, "height")?;
-
+    let x = num_attr(element, "x", 0.0)?;
+    let y = num_attr(element, "y", 0.0)?;
+    let width = required_attr(element, "width")?;
+    let height = required_attr(element, "height")?;
     if width < 0.0 || height < 0.0 {
         return None;
     }
-
+    // Rounded corners only remove area, so the sharp rectangle is an upper bound.
     Some(BBox::new(x, y, x + width, y + height))
 }
 
-/// Compute the bounding box of a `<circle>` element.
 fn bbox_circle(element: &Element) -> Option<BBox> {
-    let cx = attr_f64(element, "cx", 0.0);
-    let cy = attr_f64(element, "cy", 0.0);
-    let r = attr_f64_required(element, "r")?;
-
+    let cx = num_attr(element, "cx", 0.0)?;
+    let cy = num_attr(element, "cy", 0.0)?;
+    let r = required_attr(element, "r")?;
     if r < 0.0 {
         return None;
     }
-
     Some(BBox::new(cx - r, cy - r, cx + r, cy + r))
 }
 
-/// Compute the bounding box of an `<ellipse>` element.
 fn bbox_ellipse(element: &Element) -> Option<BBox> {
-    let cx = attr_f64(element, "cx", 0.0);
-    let cy = attr_f64(element, "cy", 0.0);
-    let rx = attr_f64_required(element, "rx")?;
-    let ry = attr_f64_required(element, "ry")?;
-
+    let cx = num_attr(element, "cx", 0.0)?;
+    let cy = num_attr(element, "cy", 0.0)?;
+    let rx = required_attr(element, "rx")?;
+    let ry = required_attr(element, "ry")?;
     if rx < 0.0 || ry < 0.0 {
         return None;
     }
-
     Some(BBox::new(cx - rx, cy - ry, cx + rx, cy + ry))
 }
 
-/// Compute the bounding box of a `<line>` element.
 fn bbox_line(element: &Element) -> Option<BBox> {
-    let x1 = attr_f64(element, "x1", 0.0);
-    let y1 = attr_f64(element, "y1", 0.0);
-    let x2 = attr_f64(element, "x2", 0.0);
-    let y2 = attr_f64(element, "y2", 0.0);
-
+    let x1 = num_attr(element, "x1", 0.0)?;
+    let y1 = num_attr(element, "y1", 0.0)?;
+    let x2 = num_attr(element, "x2", 0.0)?;
+    let y2 = num_attr(element, "y2", 0.0)?;
     Some(BBox::new(x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2)))
 }
 
-/// Parse a `points` attribute (space and/or comma separated coordinate pairs)
-/// and compute the bounding box.
+/// Bounding box of a `points` list. An odd count or a single point is treated as
+/// unknown.
 fn bbox_points(element: &Element) -> Option<BBox> {
-    let points_str = element.attributes.get("points")?;
-
-    let nums: Vec<f64> = points_str
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse::<f64>().ok())
-        .collect();
-
-    // Need at least one coordinate pair
-    if nums.len() < 2 || nums.len() % 2 != 0 {
+    let nums = parse_list(element.attributes.get("points")?)?;
+    if nums.len() < 4 || nums.len() % 2 != 0 {
         return None;
     }
-
     let mut bbox = BBox::new(nums[0], nums[1], nums[0], nums[1]);
     for pair in nums.chunks(2) {
         bbox.expand_to(pair[0], pair[1]);
     }
-
     Some(bbox)
 }
 
-/// Compute the bounding box of a `<path>` element using the conservative
-/// control-point hull approach. For curves, all control points are included
-/// which overestimates the bbox — this is intentionally safe for our use case.
-fn bbox_path(element: &Element) -> Option<BBox> {
-    let d = element.attributes.get("d")?;
-    let path = Path::new(d);
-
-    if path.commands.is_empty() {
-        return None;
-    }
-
+/// Bounding box of path segments that is guaranteed to contain the painted
+/// geometry. Curves contribute their control points, which bounds the curve.
+/// An arc lies within `2 * a` of its start point, where `a` is its (possibly
+/// scaled up) larger radius, so that square is used.
+pub fn segments_bbox(segments: &[Segment]) -> Option<BBox> {
     let mut bbox: Option<BBox> = None;
-    let mut cur_x: f64 = 0.0;
-    let mut cur_y: f64 = 0.0;
-    // Track the start of the current sub-path for Z commands
-    let mut sub_start_x: f64 = 0.0;
-    let mut sub_start_y: f64 = 0.0;
+    let mut add = |x: f64, y: f64| match bbox.as_mut() {
+        Some(b) => b.expand_to(x, y),
+        None => bbox = Some(BBox::new(x, y, x, y)),
+    };
 
-    for cmd in &path.commands {
-        let vals: Vec<f64> = cmd.values.iter().map(|v| *v as f64).collect();
-
-        match cmd.command_type {
-            // ── Move ──────────────────────────────────────────────
-            PathCommandType::MoveTo => {
-                if vals.len() >= 2 {
-                    cur_x = vals[0];
-                    cur_y = vals[1];
-                    sub_start_x = cur_x;
-                    sub_start_y = cur_y;
-                    expand_bbox(&mut bbox, cur_x, cur_y);
+    let mut cur = (0.0f64, 0.0f64);
+    let mut start = (0.0f64, 0.0f64);
+    for seg in segments {
+        match *seg {
+            Segment::Move { x, y } => {
+                add(x, y);
+                start = (x, y);
+            }
+            Segment::Line { x, y } => add(x, y),
+            Segment::Cubic { x1, y1, x2, y2, x, y } => {
+                add(x1, y1);
+                add(x2, y2);
+                add(x, y);
+            }
+            Segment::Quad { x1, y1, x, y } => {
+                add(x1, y1);
+                add(x, y);
+            }
+            Segment::Arc { rx, ry, rotation, x, y, .. } => {
+                add(x, y);
+                let (rx, ry) = (rx.abs(), ry.abs());
+                if rx > 0.0 && ry > 0.0 {
+                    // Half-chord in the ellipse's rotated frame, used to find the
+                    // radius the spec scales up to when the radii are too small.
+                    let phi = rotation.to_radians();
+                    let (sin, cos) = phi.sin_cos();
+                    let dx = (cur.0 - x) / 2.0;
+                    let dy = (cur.1 - y) / 2.0;
+                    let x1p = cos * dx + sin * dy;
+                    let y1p = -sin * dx + cos * dy;
+                    let lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+                    let a = rx.max(ry) * lambda.max(1.0).sqrt();
+                    let bound = 2.0 * a;
+                    add(cur.0 - bound, cur.1 - bound);
+                    add(cur.0 + bound, cur.1 + bound);
                 }
             }
-            PathCommandType::MoveToRelative => {
-                if vals.len() >= 2 {
-                    cur_x += vals[0];
-                    cur_y += vals[1];
-                    sub_start_x = cur_x;
-                    sub_start_y = cur_y;
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-
-            // ── Line ──────────────────────────────────────────────
-            PathCommandType::LineTo => {
-                if vals.len() >= 2 {
-                    cur_x = vals[0];
-                    cur_y = vals[1];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-            PathCommandType::LineToRelative => {
-                if vals.len() >= 2 {
-                    cur_x += vals[0];
-                    cur_y += vals[1];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-            PathCommandType::HorizontalLine => {
-                if vals.len() >= 1 {
-                    cur_x = vals[0];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-            PathCommandType::HorizontalLineRelative => {
-                if vals.len() >= 1 {
-                    cur_x += vals[0];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-            PathCommandType::VerticalLine => {
-                if vals.len() >= 1 {
-                    cur_y = vals[0];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-            PathCommandType::VerticalLineRelative => {
-                if vals.len() >= 1 {
-                    cur_y += vals[0];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-
-            // ── Cubic Bézier ──────────────────────────────────────
-            // C: x1 y1 x2 y2 x y (6 values)
-            PathCommandType::CubicBezierCurve => {
-                if vals.len() >= 6 {
-                    // Include control points (conservative)
-                    expand_bbox(&mut bbox, vals[0], vals[1]);
-                    expand_bbox(&mut bbox, vals[2], vals[3]);
-                    cur_x = vals[4];
-                    cur_y = vals[5];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-            PathCommandType::CubicBezierCurveRelative => {
-                if vals.len() >= 6 {
-                    expand_bbox(&mut bbox, cur_x + vals[0], cur_y + vals[1]);
-                    expand_bbox(&mut bbox, cur_x + vals[2], cur_y + vals[3]);
-                    cur_x += vals[4];
-                    cur_y += vals[5];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-
-            // ── Smooth Cubic Bézier ───────────────────────────────
-            // S: x2 y2 x y (4 values)
-            PathCommandType::AdditionalBezierCurve => {
-                if vals.len() >= 4 {
-                    expand_bbox(&mut bbox, vals[0], vals[1]);
-                    cur_x = vals[2];
-                    cur_y = vals[3];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-            PathCommandType::AdditionalBezierCurveRelative => {
-                if vals.len() >= 4 {
-                    expand_bbox(&mut bbox, cur_x + vals[0], cur_y + vals[1]);
-                    cur_x += vals[2];
-                    cur_y += vals[3];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-
-            // ── Quadratic Bézier ──────────────────────────────────
-            // Q: x1 y1 x y (4 values)
-            PathCommandType::QuadraticBezierCurve => {
-                if vals.len() >= 4 {
-                    expand_bbox(&mut bbox, vals[0], vals[1]);
-                    cur_x = vals[2];
-                    cur_y = vals[3];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-            PathCommandType::QuadraticBezierCurveRelative => {
-                if vals.len() >= 4 {
-                    expand_bbox(&mut bbox, cur_x + vals[0], cur_y + vals[1]);
-                    cur_x += vals[2];
-                    cur_y += vals[3];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-
-            // ── Smooth Quadratic Bézier ───────────────────────────
-            // T: x y (2 values)
-            PathCommandType::AdditionalQuadraticBezierCurve => {
-                if vals.len() >= 2 {
-                    cur_x = vals[0];
-                    cur_y = vals[1];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-            PathCommandType::AdditionalQuadraticBezierCurveRelative => {
-                if vals.len() >= 2 {
-                    cur_x += vals[0];
-                    cur_y += vals[1];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-
-            // ── Arc ───────────────────────────────────────────────
-            // A: rx ry x-rotation large-arc sweep x y (7 values)
-            // Conservative: include the endpoint only.
-            PathCommandType::Arc => {
-                if vals.len() >= 7 {
-                    cur_x = vals[5];
-                    cur_y = vals[6];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-            PathCommandType::ArcRelative => {
-                if vals.len() >= 7 {
-                    cur_x += vals[5];
-                    cur_y += vals[6];
-                    expand_bbox(&mut bbox, cur_x, cur_y);
-                }
-            }
-
-            // ── Close ─────────────────────────────────────────────
-            PathCommandType::Close | PathCommandType::CloseAlternate => {
-                cur_x = sub_start_x;
-                cur_y = sub_start_y;
-            }
+            Segment::Close => {}
         }
+        cur = seg.end_point(start);
     }
 
     bbox.filter(|b| b.is_valid())
 }
 
-/// Helper to expand an Option<BBox> to include a point.
-fn expand_bbox(bbox: &mut Option<BBox>, x: f64, y: f64) {
-    match bbox {
-        Some(b) => b.expand_to(x, y),
-        None => *bbox = Some(BBox::new(x, y, x, y)),
-    }
+fn bbox_path(element: &Element) -> Option<BBox> {
+    let segments = Path::parse(element.attributes.get("d")?)?.segments()?;
+    segments_bbox(&segments)
 }
 
-/// Compute the bounding box of a group element by taking the union of
-/// all children's bounding boxes. Returns None if any child's bbox
-/// cannot be computed (conservative).
+/// Bounding box of a group: the union of its children, ignoring children that
+/// are not displayed. A child with its own transform is unknown.
 fn bbox_group(element: &Element) -> Option<BBox> {
     let mut result: Option<BBox> = None;
-    let mut has_children = false;
-
-    for child in &element.children {
-        if let Some(child_el) = child.as_element() {
-            has_children = true;
-            let child_bbox = compute_element_bbox(child_el)?;
-            result = Some(match result {
-                Some(existing) => existing.union(&child_bbox),
-                None => child_bbox,
-            });
+    for child in element.children.iter().filter_map(|c| c.as_element()) {
+        if child.attributes.get("display").map(String::as_str) == Some("none") {
+            continue;
         }
+        if child.attributes.contains_key("transform") {
+            return None;
+        }
+        let child_bbox = compute_element_bbox(child)?;
+        result = Some(match result {
+            Some(existing) => existing.union(&child_bbox),
+            None => child_bbox,
+        });
     }
-
-    if !has_children {
-        return None;
-    }
-
     result
 }
 
-/// Compute the axis-aligned bounding box of an SVG element.
+/// Bounding box of an element's geometry in its own user space.
 ///
-/// Returns `None` when the bbox cannot be reliably determined:
-/// - Element has a `transform` attribute
-/// - Element type is unsupported (text, image, use, foreignObject, etc.)
-/// - Required attributes are missing or unparseable
+/// The element's own `transform` is not applied: clip paths and similar
+/// references are in that same user space, so local coordinates are the right
+/// frame. A child with its own transform makes the result unknown.
 ///
-/// For path curves (C, S, Q, T), the control-point bounding box is used,
-/// which conservatively overestimates the true bbox. For arcs, only the
-/// endpoint is included.
+/// Returns `None` whenever the geometry cannot be bounded from the attributes
+/// alone (text, images, `use`, unparseable values).
 pub fn compute_element_bbox(element: &Element) -> Option<BBox> {
-    // Bail out if element has a transform — we cannot reliably compute
-    // the bbox without applying it.
-    if element.attributes.contains_key("transform") {
-        return None;
-    }
-
     match element.name.as_str() {
         "rect" => bbox_rect(element),
         "circle" => bbox_circle(element),
@@ -389,8 +215,36 @@ pub fn compute_element_bbox(element: &Element) -> Option<BBox> {
         "line" => bbox_line(element),
         "polyline" | "polygon" => bbox_points(element),
         "path" => bbox_path(element),
-        "g" | "a" | "clipPath" | "marker" | "symbol" => bbox_group(element),
-        // Elements whose geometry we cannot determine
+        "g" | "a" | "clipPath" => bbox_group(element),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unparseable_attribute_is_unknown_not_zero() {
+        let mut rect = Element::new("rect");
+        rect.attributes.insert("x".into(), "10%".into());
+        rect.attributes.insert("width".into(), "5".into());
+        rect.attributes.insert("height".into(), "5".into());
+        assert!(compute_element_bbox(&rect).is_none());
+    }
+
+    #[test]
+    fn curve_bbox_includes_control_points() {
+        let segs = Path::parse("M0 0C0 100 100 100 100 0").unwrap().segments().unwrap();
+        let b = segments_bbox(&segs).unwrap();
+        assert_eq!(b.max_y, 100.0);
+    }
+
+    #[test]
+    fn arc_bbox_covers_bulge() {
+        // A half circle of radius 50 from (0,0) to (100,0) bulges to y=50 (or -50).
+        let segs = Path::parse("M0 0A50 50 0 0 1 100 0").unwrap().segments().unwrap();
+        let b = segments_bbox(&segs).unwrap();
+        assert!(b.min_y <= -50.0 + 1e-9 || b.max_y >= 50.0 - 1e-9);
     }
 }

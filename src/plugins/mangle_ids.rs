@@ -1,172 +1,165 @@
 use crate::plugin::WholeSVGPluginTrait;
 use crate::svg::Svg;
-use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
-use xmltree::Element;
+use xmltree::{Element, XMLNode};
 
+/**
+ * Plugin
+ *
+ * Name: Mangle IDs
+ * Author: Nikola Lazarov
+ *
+ * Description:
+ * Renames ids and classes to short generated names.
+ *
+ * A name is renamed only when every use of it can be rewritten reliably:
+ * - `url(#name)` and `href="#name"` references are rewritten.
+ * - A name that appears in a stylesheet, in a `style` attribute, in a bare
+ *   (non-`#`) position such as `aria-labelledby` or `begin="name.end"`, or as an
+ *   external `href` is left alone. So are hex-looking names, which could be
+ *   colours such as `#abc`, and names with characters outside `[A-Za-z0-9_-]`.
+ * - Generated names never equal an original name or a stylesheet token, so
+ *   nothing can collide or start matching a rule.
+ */
 pub struct MangleIdsPlugin {
     pub prefix: Option<String>,
 }
 
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '-' || c == '_'
+}
+
+/// Byte ranges of maximal identifier runs in `text`.
+fn ident_runs(text: &str) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, c) in text.char_indices() {
+        if is_ident_char(c) {
+            if start.is_none() {
+                start = Some(i);
+            }
+        } else if let Some(s) = start.take() {
+            runs.push((s, i));
+        }
+    }
+    if let Some(s) = start {
+        runs.push((s, text.len()));
+    }
+    runs
+}
+
+fn is_hex_like(name: &str) -> bool {
+    matches!(name.len(), 3 | 4 | 6 | 8) && name.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn is_plain_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(is_ident_char)
+}
+
+/// Bijective base-52 name: 0 -> "a", 51 -> "Z", 52 -> "aa", and so on.
+fn name_for_index(mut n: usize) -> String {
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut name = Vec::new();
+    loop {
+        name.push(ALPHABET[n % ALPHABET.len()]);
+        n /= ALPHABET.len();
+        if n == 0 {
+            break;
+        }
+        n -= 1;
+    }
+    name.reverse();
+    String::from_utf8(name).unwrap()
+}
+
 impl MangleIdsPlugin {
-    fn generate_id(index: usize, prefix: &Option<String>) -> String {
-        let mut name = String::new();
-        let mut n = index;
-        let alphabet: Vec<char> = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-            .chars()
-            .collect();
-        let base = alphabet.len();
-
-        loop {
-            name.push(alphabet[n % base]);
-            n /= base;
-            if n == 0 {
-                break;
-            }
-            n -= 1; // Adjust for 0-indexed logic in subsequent iterations if needed
-        }
-
-        let generated = name.chars().rev().collect::<String>();
-        match prefix {
-            Some(p) => format!("{}{}", p, generated),
-            None => generated,
-        }
-    }
-
-    fn collect_ids_and_classes(
-        element: &Element,
-        ids: &mut HashSet<String>,
-        classes: &mut HashSet<String>,
-    ) {
-        if let Some(id) = element.attributes.get("id") {
-            ids.insert(id.clone());
-        }
-
-        if let Some(class_attr) = element.attributes.get("class") {
-            for class_name in class_attr.split_whitespace() {
-                classes.insert(class_name.to_string());
-            }
-        }
-
-        for child in &element.children {
-            if let Some(child_element) = child.as_element() {
-                Self::collect_ids_and_classes(child_element, ids, classes);
-            }
-        }
-    }
-
-    fn update_element(
-        element: &mut Element,
-        id_map: &HashMap<String, String>,
-        class_map: &HashMap<String, String>,
-    ) {
-        // Update ID
-        if let Some(id) = element.attributes.get_mut("id") {
-            if let Some(new_id) = id_map.get(id.as_str()) {
-                *id = new_id.clone();
-            }
-        }
-
-        // Update Class
-        if let Some(class_attr) = element.attributes.get_mut("class") {
-            let new_classes: Vec<String> = class_attr
-                .split_whitespace()
-                .map(|c| class_map.get(c).unwrap_or(&c.to_string()).clone())
-                .collect();
-            *class_attr = new_classes.join(" ");
-        }
-
-        // Update References in attributes (e.g. url(#old_id), href="#old_id")
-        // Basic regex approach for attributes that might contain references
-        // Common attributes: clip-path, mask, marker-*, fill, stroke, href, xlink:href, filter, style
-        // Note: This is a simplified approach and might not cover all edge cases or complex CSS selectors in style attributes.
-        // For style attributes with full CSS parsing, we would need a full CSS parser (like css-structs logic, but applied here).
-        // Since we don't have a mutable CSS parser handy for just this, we'll do simple string replacement for now.
-
-        let mut attrs_to_update: Vec<(String, String)> = Vec::new();
-
-        for (key, value) in &element.attributes {
-            let mut new_value = value.clone();
-            let mut changed = false;
-
-            // Simple reference: url(#id)
-            for (old_id, new_id) in id_map {
-                if new_value.contains(old_id) {
-                    // Check for url(#id)
-                    let url_pattern = format!("url(#{0})", old_id);
-                    if new_value.contains(&url_pattern) {
-                        new_value = new_value.replace(&url_pattern, &format!("url(#{0})", new_id));
-                        changed = true;
+    /// Collects every id and class, and the names that must not be renamed.
+    fn collect(element: &Element, ids: &mut BTreeSet<String>, classes: &mut BTreeSet<String>, excluded: &mut HashSet<String>) {
+        for (name, value) in &element.attributes {
+            match name.as_str() {
+                "id" => {
+                    ids.insert(value.clone());
+                }
+                "class" => {
+                    classes.extend(value.split_whitespace().map(str::to_string));
+                }
+                "style" => Self::exclude_all_tokens(value, excluded),
+                "href" | "xlink:href" => {
+                    let local = value.strip_prefix('#').filter(|r| is_plain_name(r));
+                    if local.is_none() {
+                        Self::exclude_all_tokens(value, excluded);
                     }
-                    // Check for href="#id"
-                    let href_pattern = format!("#{0}", old_id);
-                    if (key == "href" || key.ends_with(":href")) && new_value == href_pattern {
-                        new_value = href_pattern.replace(old_id, new_id);
-                        changed = true;
+                }
+                _ => {
+                    // A name used without `#` is not a reference this plugin can rewrite.
+                    for (start, end) in ident_runs(value) {
+                        if !value[..start].ends_with('#') {
+                            excluded.insert(value[start..end].to_string());
+                        }
                     }
                 }
             }
-            // Class references in style? .old_class
-            // This is risky with simple replace. We assume styles are handled by CSS parser plugin or we need a robust Regex.
-            // For now, let's focus on XML attributes.
-
-            if changed {
-                attrs_to_update.push((key.clone(), new_value));
-            }
         }
 
-        for (key, val) in attrs_to_update {
-            element.attributes.insert(key, val);
-        }
-
-        for child in &mut element.children {
-            if let Some(child_element) = child.as_mut_element() {
-                Self::update_element(child_element, id_map, class_map);
-            }
-        }
-    }
-
-    // Helper to update style content if possible (if it's a <style> tag)
-    fn update_style_element(
-        element: &mut Element,
-        id_map: &HashMap<String, String>,
-        class_map: &HashMap<String, String>,
-    ) {
         if element.name == "style" {
-            if let Some(text) = element.get_text() {
-                let mut new_text = text.to_string();
-                // Naive replacement for classes and IDs in CSS
-                // To do this safely, we need a CSS tokenizer.
-                // Given the constraints and dependencies, we might try a regex that matches .classname and #idname
-                // But be careful not to match hex colors.
-
-                for (old_class, new_class) in class_map {
-                    // match .old_class but not if it follows something else? CSS is complex.
-                    // Simple approach: replace exact word match if it starts with .
-                    // This is very heuristic.
-                    let re = Regex::new(&format!("\\.{}", regex::escape(old_class))).unwrap();
-                    new_text = re
-                        .replace_all(&new_text, format!(".{}", new_class))
-                        .to_string();
+            for node in &element.children {
+                if let XMLNode::Text(text) | XMLNode::CData(text) = node {
+                    Self::exclude_all_tokens(text, excluded);
                 }
-
-                for (old_id, new_id) in id_map {
-                    let re = Regex::new(&format!("#{}", regex::escape(old_id))).unwrap();
-                    new_text = re
-                        .replace_all(&new_text, format!("#{}", new_id))
-                        .to_string();
-                }
-
-                // Clear children and set new text
-                element.children.clear();
-                element.children.push(xmltree::XMLNode::Text(new_text));
             }
         }
 
-        for child in &mut element.children {
+        for child in element.children.iter().filter_map(|c| c.as_element()) {
+            Self::collect(child, ids, classes, excluded);
+        }
+    }
+
+    fn exclude_all_tokens(text: &str, excluded: &mut HashSet<String>) {
+        for (start, end) in ident_runs(text) {
+            excluded.insert(text[start..end].to_string());
+        }
+    }
+
+    /// Replaces each `#name` reference in `value` that has a new name.
+    fn rewrite_references(value: &str, map: &HashMap<String, String>) -> String {
+        let mut out = String::with_capacity(value.len());
+        let mut last = 0;
+        for (start, end) in ident_runs(value) {
+            if let Some(new_name) = map.get(&value[start..end]) {
+                if value[..start].ends_with('#') {
+                    out.push_str(&value[last..start]);
+                    out.push_str(new_name);
+                    last = end;
+                }
+            }
+        }
+        out.push_str(&value[last..]);
+        out
+    }
+
+    fn rewrite(element: &mut Element, map: &HashMap<String, String>) {
+        for (name, value) in element.attributes.iter_mut() {
+            match name.as_str() {
+                "id" => {
+                    if let Some(new_name) = map.get(value.as_str()) {
+                        *value = new_name.clone();
+                    }
+                }
+                "class" => {
+                    let renamed: Vec<String> = value
+                        .split_whitespace()
+                        .map(|c| map.get(c).cloned().unwrap_or_else(|| c.to_string()))
+                        .collect();
+                    *value = renamed.join(" ");
+                }
+                _ => *value = Self::rewrite_references(value, map),
+            }
+        }
+
+        for child in element.children.iter_mut() {
             if let Some(child_element) = child.as_mut_element() {
-                Self::update_style_element(child_element, id_map, class_map);
+                Self::rewrite(child_element, map);
             }
         }
     }
@@ -174,32 +167,102 @@ impl MangleIdsPlugin {
 
 impl WholeSVGPluginTrait for MangleIdsPlugin {
     fn process(&self, svg: &mut Svg) -> Result<Svg, Box<dyn Error>> {
-        let mut ids = HashSet::new();
-        let mut classes = HashSet::new();
-
-        Self::collect_ids_and_classes(&svg.root, &mut ids, &mut classes);
-
-        let mut id_map = HashMap::new();
-        let mut class_map = HashMap::new();
-
-        let mut sorted_ids: Vec<_> = ids.into_iter().collect();
-        sorted_ids.sort(); // Deterministic order
-        for (i, id) in sorted_ids.iter().enumerate() {
-            id_map.insert(id.clone(), Self::generate_id(i, &self.prefix));
-        }
-
-        let mut sorted_classes: Vec<_> = classes.into_iter().collect();
-        sorted_classes.sort();
-        for (i, class) in sorted_classes.iter().enumerate() {
-            class_map.insert(class.clone(), Self::generate_id(i, &self.prefix));
-        }
-
         let mut svg_clone = svg.clone();
 
-        // 2 passes: 1 for attributes, 1 for style text (optional/risky)
-        Self::update_element(&mut svg_clone.root, &id_map, &class_map);
-        Self::update_style_element(&mut svg_clone.root, &id_map, &class_map);
+        let mut ids = BTreeSet::new();
+        let mut classes = BTreeSet::new();
+        let mut excluded = HashSet::new();
+        Self::collect(&svg_clone.root, &mut ids, &mut classes, &mut excluded);
 
+        // Generated names must not equal any original name, nor any token used in a
+        // stylesheet or bare reference: a class renamed to `a` would start matching
+        // a `.a` rule that matched nothing before.
+        let originals: HashSet<String> = ids.iter().chain(classes.iter()).cloned().collect();
+        let mut next_index = 0usize;
+        let mut fresh = || loop {
+            let name = format!(
+                "{}{}",
+                self.prefix.as_deref().unwrap_or(""),
+                name_for_index(next_index)
+            );
+            next_index += 1;
+            if !originals.contains(&name) && !excluded.contains(&name) {
+                return name;
+            }
+        };
+
+        let mut map: HashMap<String, String> = HashMap::new();
+        for name in ids.iter().chain(classes.iter()) {
+            if map.contains_key(name)
+                || excluded.contains(name)
+                || is_hex_like(name)
+                || !is_plain_name(name)
+            {
+                continue;
+            }
+            map.insert(name.clone(), fresh());
+        }
+
+        Self::rewrite(&mut svg_clone.root, &map);
         Ok(svg_clone)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(input: &str) -> String {
+        let mut svg = Svg::from_string(&input.to_string()).unwrap();
+        MangleIdsPlugin { prefix: None }.process(&mut svg).unwrap().to_string()
+    }
+
+    #[test]
+    fn names_are_bijective() {
+        assert_eq!(name_for_index(0), "a");
+        assert_eq!(name_for_index(51), "Z");
+        assert_eq!(name_for_index(52), "aa");
+        assert_eq!(name_for_index(53), "ab");
+    }
+
+    #[test]
+    fn rewrites_url_and_href_references() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><defs><linearGradient id="grad"/></defs><rect fill="url('#grad')"/><use xlink:href="#grad"/></svg>"##);
+        assert!(!out.contains("grad"), "{}", out);
+    }
+
+    #[test]
+    fn same_name_chain_is_not_double_mapped() {
+        // A -> a and a -> b would chain if the map were applied repeatedly.
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><linearGradient id="A"/><linearGradient id="a"/><rect fill="url(#A)"/><rect fill="url(#a)"/></svg>"##);
+        assert_eq!(out.matches("url(#").count(), 2);
+        let refs: Vec<&str> = out.split("url(#").skip(1).map(|s| &s[..s.find(')').unwrap()]).collect();
+        assert_ne!(refs[0], refs[1], "{}", out);
+    }
+
+    #[test]
+    fn names_used_in_stylesheet_are_kept() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><style>#xy{fill:red}</style><rect id="xy"/><rect id="x"/></svg>"##);
+        assert!(out.contains("id=\"xy\""));
+    }
+
+    #[test]
+    fn generated_name_does_not_match_stylesheet_rule() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><style>.a{fill:red}</style><rect class="foo"/></svg>"##);
+        assert!(!out.contains("class=\"a\""), "{}", out);
+        assert!(!out.contains("class=\"foo\""), "{}", out);
+    }
+
+    #[test]
+    fn hex_looking_ids_are_kept() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><rect id="abc" fill="#abc"/></svg>"##);
+        assert!(out.contains("id=\"abc\""));
+        assert!(out.contains("fill=\"#abc\""));
+    }
+
+    #[test]
+    fn classes_are_renamed_consistently() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><rect class="cls-1 other"/><rect class="cls-1"/></svg>"##);
+        assert!(!out.contains("cls-1"), "{}", out);
     }
 }

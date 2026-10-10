@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <path transform="scale(-1 1) translate(-200 0)" fill="none" stroke="#000" stroke-width="6" d="M20 60 A 60 60 0 0 1 140 60"/>
+  <path transform="scale(2 1)" fill="none" stroke="#c00" stroke-width="4" d="M10 150 A 20 10 30 0 1 40 170"/>
+</svg>

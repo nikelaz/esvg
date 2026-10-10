@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <style>rect[data-kind="hot"]{fill:#e00} rect[data-kind="cold"]{fill:#06f}</style>
+  <rect data-kind="hot" x="10" y="10" width="80" height="80"/>
+  <rect data-kind="cold" x="110" y="110" width="80" height="80"/>
+</svg>

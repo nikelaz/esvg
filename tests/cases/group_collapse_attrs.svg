@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <g class="outer" style="stroke:#f00;stroke-width:4"><path class="inner" style="stroke:#00f" fill="none" d="M10 10 L 190 10"/></g>
+  <g opacity="0.5" clip-path="url(#k)"><path fill="#333" d="M10 50 h 180 v 40 h -180 z" opacity="0.5"/></g>
+  <defs><clipPath id="k"><rect x="0" y="0" width="200" height="200"/></clipPath></defs>
+  <g systemLanguage="xx"><rect x="10" y="120" width="60" height="60" fill="#0c0"/></g>
+  <switch><g systemLanguage="xx"><rect x="100" y="120" width="60" height="60" fill="#c0c"/></g><rect x="100" y="120" width="60" height="60" fill="#333"/></switch>
+</svg>

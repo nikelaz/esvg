@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <circle cx="50px" cy="50" r="30" transform="translate(10 10)" fill="#f33"/>
+  <circle cx="150" cy="50" r="30" transform="scale(-1 1) translate(-300 0)" fill="#3c3"/>
+  <circle cx="60" cy="150" r="30" transform="scale(1.5 0.5)" fill="#33f"/>
+</svg>

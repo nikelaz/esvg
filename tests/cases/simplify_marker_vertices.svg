@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs><marker id="m" markerWidth="30" markerHeight="30" refX="15" refY="15" markerUnits="userSpaceOnUse"><circle cx="15" cy="15" r="15" fill="#c00" fill-opacity="0.4"/></marker></defs>
+  <path marker-mid="url(#m)" fill="none" stroke="#000" stroke-width="2" d="M30 30L170 30L170 30L170 170L30 170L30 30Z"/>
+</svg>

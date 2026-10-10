@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <switch>
+    <g><rect x="10" y="10" width="80" height="80" fill="#c00"/><circle cx="150" cy="150" r="40" fill="#00c"/></g>
+    <rect x="10" y="110" width="80" height="80" fill="#0c0"/>
+  </switch>
+</svg>

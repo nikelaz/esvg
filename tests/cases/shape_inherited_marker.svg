@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs><marker id="dot" markerWidth="20" markerHeight="20" refX="10" refY="10" markerUnits="userSpaceOnUse"><circle cx="10" cy="10" r="10" fill="#c00"/></marker></defs>
+  <g marker-start="url(#dot)" marker-end="url(#dot)" marker-mid="url(#dot)">
+    <rect x="40" y="40" width="120" height="120" fill="#ccc"/>
+  </g>
+</svg>

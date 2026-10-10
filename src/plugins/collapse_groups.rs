@@ -16,37 +16,28 @@ use crate::Svg;
 use std::error::Error;
 use xmltree::Element;
 
-/// Attributes that are meaningful on a group element — if any of these are present,
-/// the group is NOT transparent and cannot simply be unwrapped without consideration.
-const MEANINGFUL_ATTRIBUTES: &[&str] = &[
-    "id",
-    "class",
-    "transform",
-    "clip-path",
-    "clip-rule",
-    "mask",
-    "filter",
+/// Properties that are not inherited. Their value on a group applies to the
+/// group as a whole, so they cannot be merged onto a child that sets its own.
+const NON_INHERITED: &[&str] = &[
     "opacity",
     "display",
-    "fill",
-    "fill-rule",
-    "fill-opacity",
-    "stroke",
-    "stroke-width",
-    "stroke-dasharray",
-    "stroke-dashoffset",
-    "stroke-linecap",
-    "stroke-linejoin",
-    "stroke-miterlimit",
-    "stroke-opacity",
-    "font-size",
-    "font-style",
-    "font-weight",
-    "font-family",
-    "text-decoration",
-    "style",
     "overflow",
+    "clip",
+    "clip-path",
+    "mask",
+    "mask-type",
+    "filter",
+    "stop-color",
+    "stop-opacity",
+    "flood-color",
+    "flood-opacity",
+    "lighting-color",
+    "mix-blend-mode",
+    "isolation",
     "transform-origin",
+    "systemLanguage",
+    "requiredFeatures",
+    "requiredExtensions",
 ];
 
 pub struct CollapseGroupsPlugin;
@@ -65,6 +56,13 @@ impl CollapseGroupsPlugin {
     }
 
     fn collapse_child_groups(element: &mut Element) {
+        // A <switch> renders only its first matching direct child, so its children
+        // must stay exactly as they are: unwrapping a group would expose the
+        // group's first child alone, and removing an empty one changes the match.
+        if element.name == "switch" {
+            return;
+        }
+
         let mut new_children = Vec::new();
 
         for child in element.children.drain(..) {
@@ -91,9 +89,16 @@ impl CollapseGroupsPlugin {
 
                     // Case 3: Single-child group — merge attributes onto child
                     if child_element_count == 1 && group.children.len() == 1 {
-                        let merged = Self::merge_single_child(group);
-                        new_children.push(xmltree::XMLNode::Element(merged));
-                        continue;
+                        let can_merge = group
+                            .children
+                            .iter()
+                            .find_map(|c| c.as_element())
+                            .map_or(false, |child| Self::can_merge(&group, child));
+                        if can_merge {
+                            let merged = Self::merge_single_child(group);
+                            new_children.push(xmltree::XMLNode::Element(merged));
+                            continue;
+                        }
                     }
 
                     // Group not collapsible — keep as-is
@@ -123,20 +128,53 @@ impl CollapseGroupsPlugin {
         element.children = new_children;
     }
 
-    /// A group is "transparent" if it has no meaningful attributes —
-    /// i.e., it contributes nothing visually and can be removed leaving only its children.
+    /// A group is "transparent" when it has no attributes at all. Any attribute
+    /// can change how its children render (visibility, color, markers, conditional
+    /// processing), so none of them may be dropped by unwrapping the group.
     fn is_transparent_group(group: &Element) -> bool {
-        for attr_name in group.attributes.keys() {
-            if MEANINGFUL_ATTRIBUTES.contains(&attr_name.as_str()) {
-                return false;
+        group.attributes.is_empty()
+    }
+
+    /// True when the group's attributes can be moved onto its only child without
+    /// changing the rendering.
+    fn can_merge(group: &Element, child: &Element) -> bool {
+        // These depend on the group's own coordinate system or contents.
+        if ["clip-path", "mask", "filter", "transform-origin"]
+            .iter()
+            .any(|name| group.attributes.contains_key(*name))
+        {
+            return false;
+        }
+
+        // A clip or mask on the child would be moved into the group's transformed
+        // coordinate system, so the group's transform must stay on the group.
+        if group.attributes.contains_key("transform")
+            && ["clip-path", "mask", "filter"]
+                .iter()
+                .any(|name| child.attributes.contains_key(*name))
+        {
+            return false;
+        }
+
+        for (name, _) in &group.attributes {
+            if child.attributes.contains_key(name) {
+                // Both sides define it. Inherited properties resolve in favour of
+                // the child, which is correct. Non-inherited ones would be lost, and
+                // identity/class/style values would be lost.
+                if NON_INHERITED.contains(&name.as_str())
+                    || matches!(name.as_str(), "id" | "class" | "style")
+                {
+                    return false;
+                }
             }
         }
+
         true
     }
 
     /// Merge a single-child group's attributes onto its child element.
     /// Takes ownership of the group, returns the merged child element.
-    /// If both group and child have `id`, the merge is skipped and the group is returned as-is.
+    /// Callers must check `can_merge` first.
     fn merge_single_child(mut group: Element) -> Element {
         let child_node = match group.children.pop() {
             Some(node) => node,
@@ -147,12 +185,6 @@ impl CollapseGroupsPlugin {
             xmltree::XMLNode::Element(el) => el,
             _ => return group,
         };
-
-        // Don't merge if both group and child have `id` — both are meaningful
-        if group.attributes.contains_key("id") && child.attributes.contains_key("id") {
-            group.children.push(xmltree::XMLNode::Element(child));
-            return group;
-        }
 
         // Merge each group attribute onto the child
         for (attr_name, attr_value) in &group.attributes {
@@ -167,7 +199,8 @@ impl CollapseGroupsPlugin {
                         .insert("transform".to_string(), attr_value.clone());
                 }
             } else if child.attributes.contains_key(attr_name) {
-                // Child already has this attribute — child wins (skip group's value)
+                // Child already has this attribute and inherited properties resolve
+                // in its favour (checked by `can_merge`)
             } else {
                 // Child doesn't have it — inherit from group
                 child
@@ -185,5 +218,27 @@ impl WholeSVGPluginTrait for CollapseGroupsPlugin {
         Self::process_element(&mut svg.root);
 
         Ok(svg.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(input: &str) -> String {
+        let mut svg = Svg::from_string(&input.to_string()).unwrap();
+        CollapseGroupsPlugin.process(&mut svg).unwrap().to_string()
+    }
+
+    #[test]
+    fn keeps_groups_inside_switch() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><switch><g><rect width="1" height="1"/><circle r="1"/></g><rect width="2" height="2"/></switch></svg>"##);
+        assert!(out.contains("<switch><g>"), "{}", out);
+    }
+
+    #[test]
+    fn unwraps_attribute_less_group() {
+        let out = run(r##"<svg xmlns="http://www.w3.org/2000/svg"><g><rect width="1" height="1"/><circle r="1"/></g></svg>"##);
+        assert!(!out.contains("<g"), "{}", out);
     }
 }

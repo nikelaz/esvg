@@ -4,105 +4,138 @@
 // Author: Nikola Lazarov
 //
 // Description:
-// Converts simple shapes like <rect>, <line> to <path>
-// Does not try to convert <circle> and <ellipse> as that is never more efficient
+// Converts <rect>, <line>, <polyline> and <polygon> to <path>.
+// <circle> and <ellipse> are not converted, since the element form is shorter.
+//
+// Shapes are only converted when every value is a plain number. A value with a
+// unit or percentage would not map to path data, so that shape is left alone.
+// Markers do not apply to <rect> but would apply to the resulting <path>, and
+// marker properties are inherited, so rects are only converted when the
+// document cannot draw markers (`convert_rects`). A rect with an inline style
+// is also left alone.
 
+use crate::helpers::number::{parse_list, parse_plain};
+use crate::path::{Path, Segment};
 use crate::plugin::SingleElementPluginTrait;
 use std::error::Error;
 use xmltree::Element;
 
-pub struct ShapeToPathPlugin;
+pub struct ShapeToPathPlugin {
+    /// Convert <rect>. Turn off when the document has markers.
+    pub convert_rects: bool,
+}
 
 impl ShapeToPathPlugin {
-    fn rect_to_path(element: &mut Element) {
-        let width = element.attributes.get("width");
-        let height = element.attributes.get("height");
-        let rx = element.attributes.get("rx");
-        let ry = element.attributes.get("ry");
-
-        if width == None || height == None || rx != None || ry != None {
-            return;
+    /// Plain number attribute with a default for when it is missing.
+    fn number(element: &Element, name: &str, default: f64) -> Option<f64> {
+        match element.attributes.get(name) {
+            None => Some(default),
+            Some(value) => parse_plain(value),
         }
-
-        let default_zero = "0".to_string();
-        let x_val = element.attributes.get("x").unwrap_or(&default_zero);
-        let y_val = element.attributes.get("y").unwrap_or(&default_zero);
-        let width_val = width.unwrap();
-        let height_val = height.unwrap();
-
-        let path_data = format!(
-            "M{} {} H{} V{} H{} Z",
-            x_val,
-            y_val,
-            x_val.parse::<f32>().unwrap() + width_val.parse::<f32>().unwrap(),
-            y_val.parse::<f32>().unwrap() + height_val.parse::<f32>().unwrap(),
-            x_val
-        );
-
-        element.name = "path".to_string();
-        element.attributes.remove("x");
-        element.attributes.remove("y");
-        element.attributes.remove("width");
-        element.attributes.remove("height");
-        element.attributes.insert("d".to_string(), path_data);
     }
 
-    fn line_to_path(element: &mut Element) {
-        let x1 = element.attributes.get("x1");
-        let y1 = element.attributes.get("y1");
-        let x2 = element.attributes.get("x2");
-        let y2 = element.attributes.get("y2");
-
-        if x1 == None || y1 == None || x2 == None || y2 == None {
-            return;
-        }
-
-        let path_data = format!(
-            "M{} {} L{} {}",
-            x1.unwrap(),
-            y1.unwrap(),
-            x2.unwrap(),
-            y2.unwrap()
-        );
-
+    fn set_path(element: &mut Element, segments: &[Segment], remove: &[&str]) {
         element.name = "path".to_string();
-        element.attributes.remove("x1");
-        element.attributes.remove("y1");
-        element.attributes.remove("x2");
-        element.attributes.remove("y2");
-        element.attributes.insert("d".to_string(), path_data);
+        for name in remove {
+            element.attributes.remove(*name);
+        }
+        element
+            .attributes
+            .insert("d".to_string(), Path::emit(segments, None));
     }
 
-    fn polygon_to_path(element: &mut Element, close: bool) {
-        let points = element.attributes.get("points");
-
-        if points == None {
-            return;
+    fn rect_to_path(element: &mut Element) -> bool {
+        let x = match Self::number(element, "x", 0.0) {
+            Some(v) => v,
+            None => return false,
+        };
+        let y = match Self::number(element, "y", 0.0) {
+            Some(v) => v,
+            None => return false,
+        };
+        let (width, height) = match (
+            element.attributes.get("width").and_then(|v| parse_plain(v)),
+            element.attributes.get("height").and_then(|v| parse_plain(v)),
+        ) {
+            (Some(w), Some(h)) if w > 0.0 && h > 0.0 => (w, h),
+            _ => return false,
+        };
+        // Rounded corners need arcs, which this conversion does not produce.
+        for corner in ["rx", "ry"] {
+            if let Some(value) = element.attributes.get(corner) {
+                if parse_plain(value) != Some(0.0) {
+                    return false;
+                }
+            }
+        }
+        if element.attributes.keys().any(|k| k.starts_with("marker")) || element.attributes.contains_key("style") {
+            return false;
         }
 
-        let coords = points
-            .unwrap()
-            .split_whitespace()
-            .map(|p| p.replace(',', " "))
-            .collect::<Vec<_>>();
+        let segments = [
+            Segment::Move { x, y },
+            Segment::Line { x: x + width, y },
+            Segment::Line { x: x + width, y: y + height },
+            Segment::Line { x, y: y + height },
+            Segment::Close,
+        ];
+        Self::set_path(
+            element,
+            &segments,
+            &["x", "y", "width", "height", "rx", "ry"],
+        );
+        true
+    }
 
-        if coords.is_empty() {
-            return;
+    fn line_to_path(element: &mut Element) -> bool {
+        let x1 = match Self::number(element, "x1", 0.0) {
+            Some(v) => v,
+            None => return false,
+        };
+        let y1 = match Self::number(element, "y1", 0.0) {
+            Some(v) => v,
+            None => return false,
+        };
+        let x2 = match Self::number(element, "x2", 0.0) {
+            Some(v) => v,
+            None => return false,
+        };
+        let y2 = match Self::number(element, "y2", 0.0) {
+            Some(v) => v,
+            None => return false,
+        };
+
+        let segments = [
+            Segment::Move { x: x1, y: y1 },
+            Segment::Line { x: x2, y: y2 },
+        ];
+        Self::set_path(element, &segments, &["x1", "y1", "x2", "y2"]);
+        true
+    }
+
+    fn polygon_to_path(element: &mut Element, close: bool) -> bool {
+        let values = match element.attributes.get("points").and_then(|p| parse_list(p)) {
+            Some(v) => v,
+            None => return false,
+        };
+        // Per the spec, an odd trailing value is ignored; a point needs two values.
+        let pairs: Vec<(f64, f64)> = values.chunks_exact(2).map(|p| (p[0], p[1])).collect();
+        if pairs.len() < 2 {
+            return false;
         }
 
-        let mut path_data = format!("M {}", coords[0]); // Move to first point
-
-        for point in &coords[1..] {
-            path_data.push_str(&format!(" L {}", point)); // Line to subsequent points
+        let mut segments = vec![Segment::Move {
+            x: pairs[0].0,
+            y: pairs[0].1,
+        }];
+        for &(x, y) in &pairs[1..] {
+            segments.push(Segment::Line { x, y });
         }
-
         if close {
-            path_data.push_str(" Z");
+            segments.push(Segment::Close);
         }
-
-        element.name = "path".to_string();
-        element.attributes.remove("points");
-        element.attributes.insert("d".to_string(), path_data);
+        Self::set_path(element, &segments, &["points"]);
+        true
     }
 }
 
@@ -110,14 +143,67 @@ impl SingleElementPluginTrait for ShapeToPathPlugin {
     fn process(&self, element: &mut Element) -> Result<Element, Box<dyn Error>> {
         let mut element_clone = element.clone();
 
-        match element_clone.name.as_str() {
-            "rect" => Self::rect_to_path(&mut element_clone),
-            "line" => Self::line_to_path(&mut element_clone),
-            "polyline" => Self::polygon_to_path(&mut element_clone, false),
-            "polygon" => Self::polygon_to_path(&mut element_clone, true),
+        match element_clone.name.clone().as_str() {
+            "rect" if self.convert_rects => {
+                Self::rect_to_path(&mut element_clone);
+            }
+            "line" => {
+                Self::line_to_path(&mut element_clone);
+            }
+            "polyline" => {
+                Self::polygon_to_path(&mut element_clone, false);
+            }
+            "polygon" => {
+                Self::polygon_to_path(&mut element_clone, true);
+            }
             _ => {}
         }
 
         Ok(element_clone)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn convert(xml: &str) -> Element {
+        let mut element = Element::parse(xml.as_bytes()).unwrap();
+        ShapeToPathPlugin { convert_rects: true }
+            .process(&mut element)
+            .unwrap()
+    }
+
+    #[test]
+    fn rect_becomes_closed_path() {
+        let el = convert(r##"<rect xmlns="http://www.w3.org/2000/svg" x="10" y="20" width="30" height="40"/>"##);
+        assert_eq!(el.name, "path");
+        assert_eq!(el.attributes["d"], "M10 20H40V60H10Z");
+    }
+
+    #[test]
+    fn unit_values_are_left_alone() {
+        let el = convert(r##"<rect xmlns="http://www.w3.org/2000/svg" x="10%" width="5" height="5"/>"##);
+        assert_eq!(el.name, "rect");
+        let el = convert(r##"<line xmlns="http://www.w3.org/2000/svg" x1="5%" y1="0" x2="1" y2="1"/>"##);
+        assert_eq!(el.name, "line");
+    }
+
+    #[test]
+    fn odd_polygon_points_stay_valid() {
+        let el = convert(r##"<polygon xmlns="http://www.w3.org/2000/svg" points="1,2 3,4 5"/>"##);
+        assert_eq!(el.attributes["d"], "M1 2L3 4Z");
+    }
+
+    #[test]
+    fn rect_with_marker_is_left_alone() {
+        let el = convert(r##"<rect xmlns="http://www.w3.org/2000/svg" width="5" height="5" marker-start="url(#m)"/>"##);
+        assert_eq!(el.name, "rect");
+    }
+
+    #[test]
+    fn line_becomes_path() {
+        let el = convert(r##"<line xmlns="http://www.w3.org/2000/svg" x1="0" y1="0" x2="10" y2="5"/>"##);
+        assert_eq!(el.attributes["d"], "M0 0L10 5");
     }
 }
