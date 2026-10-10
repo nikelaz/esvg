@@ -21,13 +21,13 @@ export component ExportPanel inherits VerticalLayout {
 
       Text { text: "File format"; color: Theme.muted; }
       format-combo := ComboBox {
-        model: ["SVG", "PNG", "React"];
+        model: ["SVG", "PNG", "React/JSX Component"];
         current-value: "SVG";
         enabled: AppState.svg-loaded;
       }
 
       // ── SVG options ──────────────────────────────────────────────────────────
-      if format-combo.current-value == "SVG" || format-combo.current-value == "React" : VerticalLayout {
+      if format-combo.current-value == "SVG" || format-combo.current-value == "React/JSX Component" : VerticalLayout {
         spacing: 8px;
 
         NSwitch {

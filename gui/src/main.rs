@@ -13,9 +13,70 @@ use resvg::{tiny_skia, usvg};
 slint::include_modules!();
 use esvg_rs::{apply_svg_export_options, optimize, PluginConfig, SvgExportOptions};
 use rfd::AsyncFileDialog;
+#[cfg(test)]
+mod app_tests;
 mod react_export;
 use react_export::react_component_source;
 use slint::{Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
+
+const REACT_EXPORT_FORMAT: &str = "React/JSX Component";
+
+fn export_extension(format: &str) -> &'static str {
+    match format {
+        "PNG" => "png",
+        REACT_EXPORT_FORMAT => "jsx",
+        _ => "svg",
+    }
+}
+
+fn create_export_output(
+    svg: &str,
+    format: &str,
+    file_stem: &str,
+    svg_options: &SvgExportOptions,
+    png_width: f32,
+    png_height: f32,
+) -> Result<Vec<u8>, String> {
+    if format == "PNG" {
+        let tree = usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default())
+            .map_err(|error| format!("Could not parse SVG for PNG export: {error}"))?;
+        let natural_width = tree.size().width();
+        let natural_height = tree.size().height();
+        let target_width = if png_width > 0.0 {
+            png_width
+        } else {
+            natural_width
+        };
+        let target_height = if png_height > 0.0 {
+            png_height
+        } else {
+            natural_height
+        };
+        let mut pixmap = tiny_skia::Pixmap::new(
+            target_width.ceil().max(1.0) as u32,
+            target_height.ceil().max(1.0) as u32,
+        )
+        .ok_or_else(|| "Could not allocate PNG output".to_string())?;
+        resvg::render(
+            &tree,
+            tiny_skia::Transform::from_scale(
+                target_width / natural_width,
+                target_height / natural_height,
+            ),
+            &mut pixmap.as_mut(),
+        );
+        return pixmap
+            .encode_png()
+            .map_err(|error| format!("Could not encode PNG output: {error}"));
+    }
+
+    let exported_svg = apply_svg_export_options(svg, svg_options).unwrap_or_else(|_| svg.into());
+    if format == REACT_EXPORT_FORMAT {
+        react_component_source(&exported_svg, file_stem).map(String::into_bytes)
+    } else {
+        Ok(exported_svg.into_bytes())
+    }
+}
 
 fn make_checker_image() -> SharedPixelBuffer<Rgba8Pixel> {
     const SIZE: u32 = 256;
@@ -499,11 +560,7 @@ fn save_bulk_files(
             let Some(job) = make_bulk_optimization_job(index, &file, &entries) else {
                 continue;
             };
-            let extension = match export_options.format.as_str() {
-                "PNG" => "png",
-                "React" => "jsx",
-                _ => "svg",
-            };
+            let extension = export_extension(&export_options.format);
             let output_name =
                 output_file_name(&entries.lock().unwrap()[index].path, &suffix, extension);
             let path = folder.join(output_name);
@@ -519,69 +576,37 @@ fn save_bulk_files(
                 let Some(svg) = entries.lock().unwrap()[index].optimized_svg.clone() else {
                     continue;
                 };
-                let output = if export_options.format == "PNG" {
-                    usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default())
-                        .ok()
-                        .and_then(|tree| {
-                            let natural_w = tree.size().width();
-                            let natural_h = tree.size().height();
-                            let target_w = if export_options.png_width > 0.0 {
-                                export_options.png_width
-                            } else {
-                                natural_w
-                            };
-                            let target_h = if export_options.png_height > 0.0 {
-                                export_options.png_height
-                            } else {
-                                natural_h
-                            };
-                            let mut pixmap = tiny_skia::Pixmap::new(
-                                target_w.ceil().max(1.0) as u32,
-                                target_h.ceil().max(1.0) as u32,
-                            )?;
-                            resvg::render(
-                                &tree,
-                                tiny_skia::Transform::from_scale(
-                                    target_w / natural_w,
-                                    target_h / natural_h,
-                                ),
-                                &mut pixmap.as_mut(),
-                            );
-                            pixmap.encode_png().ok()
-                        })
-                        .ok_or_else(|| "Could not render PNG output".to_string())
-                } else {
-                    let tree =
-                        usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default()).ok();
-                    let (width, height) = tree
-                        .as_ref()
-                        .map(|tree| (tree.size().width(), tree.size().height()))
-                        .unwrap_or((0.0, 0.0));
-                    let opts = SvgExportOptions {
-                        include_viewbox: export_options.include_viewbox,
-                        include_dimensions: export_options.include_dimensions,
-                        width: if export_options.width > 0.0 {
-                            export_options.width
-                        } else {
-                            width
-                        },
-                        height: if export_options.height > 0.0 {
-                            export_options.height
-                        } else {
-                            height
-                        },
-                    };
-                    let exported_svg = apply_svg_export_options(&svg, &opts).unwrap_or(svg);
-                    if export_options.format == "React" {
-                        let stem = path
-                            .file_stem()
-                            .and_then(|stem| stem.to_str())
-                            .unwrap_or("SvgComponent");
-                        react_component_source(&exported_svg, stem).map(String::into_bytes)
+                let tree = usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default()).ok();
+                let (natural_width, natural_height) = tree
+                    .as_ref()
+                    .map(|tree| (tree.size().width(), tree.size().height()))
+                    .unwrap_or((0.0, 0.0));
+                let svg_options = SvgExportOptions {
+                    include_viewbox: export_options.include_viewbox,
+                    include_dimensions: export_options.include_dimensions,
+                    width: if export_options.width > 0.0 {
+                        export_options.width
                     } else {
-                        Ok(exported_svg.into_bytes())
-                    }
+                        natural_width
+                    },
+                    height: if export_options.height > 0.0 {
+                        export_options.height
+                    } else {
+                        natural_height
+                    },
                 };
+                let stem = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("SvgComponent");
+                let output = create_export_output(
+                    &svg,
+                    &export_options.format,
+                    stem,
+                    &svg_options,
+                    export_options.png_width,
+                    export_options.png_height,
+                );
                 let result = output.and_then(|bytes| {
                     std::fs::write(&path, bytes).map_err(|error| error.to_string())
                 });
@@ -895,11 +920,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         bulk_window.set_files(ModelRc::from(files.clone()));
         bulk_window.set_checker_image(checker_image_for_bulk.clone());
         bulk_window.on_output_example(|suffix, format| {
-            let extension = match format.as_str() {
-                "React" => "jsx",
-                "PNG" => "png",
-                _ => "svg",
-            };
+            let extension = export_extension(&format);
             output_file_name(Path::new("artwork.svg"), &suffix, extension).into()
         });
 
@@ -1103,9 +1124,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .save_file()
                         .await
                 }
-                "React" => {
+                REACT_EXPORT_FORMAT => {
                     AsyncFileDialog::new()
-                        .add_filter("React Component", &["jsx"])
+                        .add_filter(REACT_EXPORT_FORMAT, &["jsx"])
                         .set_file_name("component.jsx")
                         .save_file()
                         .await
@@ -1131,92 +1152,40 @@ fn main() -> Result<(), Box<dyn Error>> {
                 state.set_loading_status("Exporting...".into());
             }
 
-            match format.as_str() {
-                "PNG" => {
-                    let h = ui_handle_for_export.clone();
-                    thread::spawn(move || {
-                        let tree = match usvg::Tree::from_data(
-                            optimized_svg.as_bytes(),
-                            &usvg::Options::default(),
-                        ) {
-                            Ok(t) => t,
-                            Err(_) => return,
-                        };
-                        let natural_w = tree.size().width();
-                        let natural_h = tree.size().height();
-
-                        // Use user-specified dimensions, falling back to natural size
-                        let target_w = if png_export_width > 0.0 {
-                            png_export_width
-                        } else {
-                            natural_w
-                        };
-                        let target_h = if png_export_height > 0.0 {
-                            png_export_height
-                        } else {
-                            natural_h
-                        };
-
-                        let out_w = (target_w.ceil() as u32).max(1);
-                        let out_h = (target_h.ceil() as u32).max(1);
-
-                        let scale_x = target_w / natural_w;
-                        let scale_y = target_h / natural_h;
-
-                        let mut pixmap = tiny_skia::Pixmap::new(out_w, out_h).unwrap();
-                        resvg::render(
-                            &tree,
-                            tiny_skia::Transform::from_scale(scale_x, scale_y),
-                            &mut pixmap.as_mut(),
-                        );
-                        if let Ok(png_data) = pixmap.encode_png() {
-                            std::fs::write(&path, png_data).ok();
+            let handle = ui_handle_for_export.clone();
+            thread::spawn(move || {
+                let svg_options = SvgExportOptions {
+                    include_viewbox: svg_include_viewbox,
+                    include_dimensions: svg_include_dimensions,
+                    width: svg_export_width,
+                    height: svg_export_height,
+                };
+                let stem = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("SvgComponent");
+                let result = create_export_output(
+                    &optimized_svg,
+                    &format,
+                    stem,
+                    &svg_options,
+                    png_export_width,
+                    png_export_height,
+                )
+                .and_then(|output| {
+                    std::fs::write(&path, output).map_err(|error| error.to_string())
+                });
+                slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = handle.upgrade() {
+                        ui.global::<AppState>().set_loading(false);
+                        if let Err(error) = result {
+                            ui.global::<AppState>()
+                                .set_export_error(format!("Export failed: {error}").into());
                         }
-                        slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = h.upgrade() {
-                                ui.global::<AppState>().set_loading(false);
-                            }
-                        })
-                        .ok();
-                    });
-                }
-                _ => {
-                    let h = ui_handle_for_export.clone();
-                    thread::spawn(move || {
-                        let opts = SvgExportOptions {
-                            include_viewbox: svg_include_viewbox,
-                            include_dimensions: svg_include_dimensions,
-                            width: svg_export_width,
-                            height: svg_export_height,
-                        };
-                        let exported_svg = apply_svg_export_options(&optimized_svg, &opts)
-                            .unwrap_or(optimized_svg);
-                        let output = if format == "React" {
-                            let stem = path
-                                .file_stem()
-                                .and_then(|stem| stem.to_str())
-                                .unwrap_or("SvgComponent");
-                            react_component_source(&exported_svg, stem)
-                        } else {
-                            Ok(exported_svg)
-                        };
-                        let result = output.and_then(|output| {
-                            std::fs::write(&path, output.as_bytes())
-                                .map_err(|error| error.to_string())
-                        });
-                        slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = h.upgrade() {
-                                ui.global::<AppState>().set_loading(false);
-                                if let Err(error) = result {
-                                    ui.global::<AppState>()
-                                        .set_export_error(format!("Export failed: {error}").into());
-                                }
-                            }
-                        })
-                        .ok();
-                    });
-                }
-            }
+                    }
+                })
+                .ok();
+            });
         })
         .ok();
     });

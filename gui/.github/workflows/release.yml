@@ -1,0 +1,155 @@
+name: Test and release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Test and package ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: linux-x86_64
+          - name: macOS Intel
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: macos-x86_64
+          - name: macOS Apple Silicon
+            os: macos-15
+            target: aarch64-apple-darwin
+            asset: macos-aarch64
+          - name: Windows x86_64
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            asset: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: ${{ matrix.os == 'windows-2022' && '-C target-feature=+crt-static' || '' }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Run tests
+        run: cargo test --locked --target ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package Linux archive
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/stage
+          cp "target/${{ matrix.target }}/release/slint-rust-template" dist/stage/esvg-gui
+          chmod +x dist/stage/esvg-gui
+          cat > dist/stage/README.txt <<'EOF'
+          ESVG SVG Optimizer
+
+          Run ./esvg-gui to start the application.
+          This build requires the host system's standard Linux desktop libraries.
+          EOF
+          tar -czf "dist/esvg-gui-${GITHUB_REF_NAME}-${{ matrix.asset }}.tar.gz" -C dist/stage esvg-gui README.txt
+
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="dist/ESVG.app"
+          mkdir -p "$app/Contents/MacOS"
+          cp "target/${{ matrix.target }}/release/slint-rust-template" "$app/Contents/MacOS/esvg-gui"
+          chmod +x "$app/Contents/MacOS/esvg-gui"
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>esvg-gui</string>
+            <key>CFBundleIdentifier</key><string>org.esvg.gui</string>
+            <key>CFBundleName</key><string>ESVG</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${GITHUB_REF_NAME#v}</string>
+            <key>CFBundleVersion</key><string>${GITHUB_REF_NAME#v}</string>
+          </dict>
+          </plist>
+          EOF
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/esvg-gui-${GITHUB_REF_NAME}-${{ matrix.asset }}.zip"
+
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          New-Item -ItemType Directory -Force dist/stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/slint-rust-template.exe" dist/stage/esvg-gui.exe
+          @"
+          ESVG SVG Optimizer $version
+
+          Run esvg-gui.exe to start the application.
+          "@ | Set-Content dist/stage/README.txt
+          Compress-Archive -Path dist/stage/* -DestinationPath "dist/esvg-gui-$env:GITHUB_REF_NAME-${{ matrix.asset }}.zip" -Force
+
+      - name: Upload packaged application
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ matrix.asset }}
+          path: dist/esvg-gui-*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged applications
+        uses: actions/download-artifact@v6
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Attach packages to the GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ESVG ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*

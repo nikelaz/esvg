@@ -346,10 +346,10 @@ export component BulkWindow inherits Window {
                 spacing: 8px;
                 Text { text: "File format"; color: Theme.muted; }
                 ComboBox {
-                  model: ["SVG", "PNG", "React"];
+                  model: ["SVG", "PNG", "React/JSX Component"];
                   current-value <=> root.output-format;
                 }
-                if root.output-format == "SVG" || root.output-format == "React": VerticalLayout {
+                if root.output-format == "SVG" || root.output-format == "React/JSX Component": VerticalLayout {
                   spacing: 8px;
                   NSwitch { text: "Include viewBox"; checked <=> root.export-include-viewbox; }
                   NSwitch { text: "Include width & height"; checked <=> root.export-include-dimensions; }
