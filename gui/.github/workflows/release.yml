@@ -81,13 +81,31 @@ jobs:
           mkdir -p dist/stage
           cp "target/${{ matrix.target }}/release/slint-rust-template" dist/stage/esvg-gui
           chmod +x dist/stage/esvg-gui
+          mkdir -p dist/stage/share/applications
+          for size in 16 24 32 48 64 128 256 512; do
+            icon_dir="dist/stage/share/icons/hicolor/${size}x${size}/apps"
+            mkdir -p "$icon_dir"
+            cp "assets/icons/linux/esvg-${size}x${size}.png" "$icon_dir/esvg-gui.png"
+          done
+          cat > dist/stage/share/applications/esvg-gui.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=ESVG SVG Optimizer
+          Exec=esvg-gui
+          Icon=esvg-gui
+          Terminal=false
+          Categories=Graphics;
+          MimeType=image/svg+xml;
+          EOF
           cat > dist/stage/README.txt <<'EOF'
           ESVG SVG Optimizer
 
           Run ./esvg-gui to start the application.
           This build requires the host system's standard Linux desktop libraries.
+          For desktop integration, install esvg-gui on PATH and copy the files in share/
+          into the matching ~/.local/share/applications and ~/.local/share/icons locations.
           EOF
-          tar -czf "dist/esvg-gui-${GITHUB_REF_NAME}-${{ matrix.asset }}.tar.gz" -C dist/stage esvg-gui README.txt
+          tar -czf "dist/esvg-gui-${GITHUB_REF_NAME}-${{ matrix.asset }}.tar.gz" -C dist/stage esvg-gui README.txt share
 
       - name: Package macOS application
         if: runner.os == 'macOS'
@@ -98,8 +116,9 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           bundle_version="${version%%-*}"
           bundle_version="${bundle_version%%+*}"
-          mkdir -p "$app/Contents/MacOS"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           cp "target/${{ matrix.target }}/release/slint-rust-template" "$app/Contents/MacOS/esvg-gui"
+          cp assets/icons/macos/esvg.icns "$app/Contents/Resources/esvg.icns"
           chmod +x "$app/Contents/MacOS/esvg-gui"
           cat > "$app/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -107,6 +126,7 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>CFBundleExecutable</key><string>esvg-gui</string>
+            <key>CFBundleIconFile</key><string>esvg.icns</string>
             <key>CFBundleIdentifier</key><string>org.esvg.gui</string>
             <key>CFBundleName</key><string>ESVG</string>
             <key>CFBundlePackageType</key><string>APPL</string>
@@ -125,12 +145,13 @@ jobs:
           $version = $env:GITHUB_REF_NAME -replace '^v', ''
           New-Item -ItemType Directory -Force dist/stage | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/slint-rust-template.exe" dist/stage/esvg-gui.exe
-          @"
+          $readme = @"
           ESVG SVG Optimizer $version
 
           Run esvg-gui.exe to start the application.
-          "@ | Set-Content dist/stage/README.txt
-          Compress-Archive -Path dist/stage/* -DestinationPath "dist/esvg-gui-$env:GITHUB_REF_NAME-${{ matrix.asset }}.zip" -Force
+          "@
+          $readme | Set-Content dist/stage/README.txt
+          Compress-Archive -Path dist/stage/* -DestinationPath "dist/esvg-gui-${env:GITHUB_REF_NAME}-${{ matrix.asset }}.zip" -Force
 
       - name: Upload packaged application
         uses: actions/upload-artifact@v6

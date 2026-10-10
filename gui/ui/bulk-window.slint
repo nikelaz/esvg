@@ -121,6 +121,7 @@ component BulkSvgCard inherits Rectangle {
 }
 
 export component BulkWindow inherits Window {
+  icon: @image-url("../assets/icons/esvg-1024.png");
   callback open-files();
   callback dropped-files(data: string);
   callback select-file(index: int);

@@ -14,6 +14,7 @@ roxmltree = "0.21.1"
 
 [build-dependencies]
 slint-build = "1.14.1"
+winres = "0.1.12"
 
 [profile.release]
 codegen-units = 1
