@@ -126,6 +126,7 @@ export component BulkWindow inherits Window {
   callback select-file(index: int);
   callback request-optimize(index: int);
   callback optimize-and-save();
+  pure callback output-example(suffix: string, format: string) -> string;
 
   in property <[BulkSvg]> files;
   in property <image> checker-image;
@@ -345,10 +346,10 @@ export component BulkWindow inherits Window {
                 spacing: 8px;
                 Text { text: "File format"; color: Theme.muted; }
                 ComboBox {
-                  model: ["SVG", "PNG"];
+                  model: ["SVG", "PNG", "React"];
                   current-value <=> root.output-format;
                 }
-                if root.output-format == "SVG": VerticalLayout {
+                if root.output-format == "SVG" || root.output-format == "React": VerticalLayout {
                   spacing: 8px;
                   NSwitch { text: "Include viewBox"; checked <=> root.export-include-viewbox; }
                   NSwitch { text: "Include width & height"; checked <=> root.export-include-dimensions; }
@@ -374,7 +375,7 @@ export component BulkWindow inherits Window {
                   placeholder-text: "-esvg-optimized.svg";
                 }
                 Text {
-                  text: "Example: artwork" + root.output-suffix;
+                  text: "Example: " + root.output-example(root.output-suffix, root.output-format);
                   color: Theme.muted;
                   font-size: 10px;
                 }

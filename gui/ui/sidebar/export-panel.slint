@@ -21,13 +21,13 @@ export component ExportPanel inherits VerticalLayout {
 
       Text { text: "File format"; color: Theme.muted; }
       format-combo := ComboBox {
-        model: ["SVG", "PNG"];
+        model: ["SVG", "PNG", "React"];
         current-value: "SVG";
         enabled: AppState.svg-loaded;
       }
 
       // ── SVG options ──────────────────────────────────────────────────────────
-      if format-combo.current-value == "SVG" : VerticalLayout {
+      if format-combo.current-value == "SVG" || format-combo.current-value == "React" : VerticalLayout {
         spacing: 8px;
 
         NSwitch {
@@ -182,6 +182,11 @@ export component ExportPanel inherits VerticalLayout {
         clicked => {
           AppState.export-file(format-combo.current-value);
         }
+      }
+      if AppState.export-error != "": Text {
+        text: AppState.export-error;
+        color: Theme.accent;
+        wrap: word-wrap;
       }
     }
   }

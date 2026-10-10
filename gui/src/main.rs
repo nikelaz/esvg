@@ -13,6 +13,8 @@ use resvg::{tiny_skia, usvg};
 slint::include_modules!();
 use esvg_rs::{apply_svg_export_options, optimize, PluginConfig, SvgExportOptions};
 use rfd::AsyncFileDialog;
+mod react_export;
+use react_export::react_component_source;
 use slint::{Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
 fn make_checker_image() -> SharedPixelBuffer<Rgba8Pixel> {
@@ -330,7 +332,7 @@ fn bulk_drop_paths(data: &str) -> Vec<PathBuf> {
     data.lines().filter_map(decode_file_uri).collect()
 }
 
-fn output_svg_name(input_path: &Path, requested_suffix: &str) -> String {
+fn output_file_name(input_path: &Path, requested_suffix: &str, extension: &str) -> String {
     let stem = input_path
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
@@ -345,10 +347,36 @@ fn output_svg_name(input_path: &Path, requested_suffix: &str) -> String {
             }
         })
         .collect();
-    if !suffix.to_ascii_lowercase().ends_with(".svg") {
-        suffix.push_str(".svg");
+    if let Some(position) = suffix.rfind('.') {
+        if matches!(
+            suffix[position..].to_ascii_lowercase().as_str(),
+            ".svg" | ".png" | ".jsx"
+        ) {
+            suffix.truncate(position);
+        }
     }
-    format!("{stem}{suffix}")
+    format!("{stem}{suffix}.{extension}")
+}
+
+#[cfg(test)]
+mod export_filename_tests {
+    use super::output_file_name;
+    use std::path::Path;
+
+    #[test]
+    fn replaces_known_suffix_extensions_for_the_selected_format() {
+        for (suffix, extension, expected) in [
+            ("-esvg-optimized.svg", "jsx", "icon-esvg-optimized.jsx"),
+            ("-component.jsx", "jsx", "icon-component.jsx"),
+            ("-image.PNG", "png", "icon-image.png"),
+            ("-v1.2", "svg", "icon-v1.2.svg"),
+        ] {
+            assert_eq!(
+                output_file_name(Path::new("icon.svg"), suffix, extension),
+                expected
+            );
+        }
+    }
 }
 
 struct BulkOptimizationJob {
@@ -471,13 +499,13 @@ fn save_bulk_files(
             let Some(job) = make_bulk_optimization_job(index, &file, &entries) else {
                 continue;
             };
-            let mut output_name = output_svg_name(&entries.lock().unwrap()[index].path, &suffix);
-            if export_options.format == "PNG" {
-                output_name = Path::new(&output_name)
-                    .with_extension("png")
-                    .to_string_lossy()
-                    .into_owned();
-            }
+            let extension = match export_options.format.as_str() {
+                "PNG" => "png",
+                "React" => "jsx",
+                _ => "svg",
+            };
+            let output_name =
+                output_file_name(&entries.lock().unwrap()[index].path, &suffix, extension);
             let path = folder.join(output_name);
             file.status = "Optimizing…".into();
             files.set_row_data(index, file);
@@ -521,6 +549,7 @@ fn save_bulk_files(
                             );
                             pixmap.encode_png().ok()
                         })
+                        .ok_or_else(|| "Could not render PNG output".to_string())
                 } else {
                     let tree =
                         usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default()).ok();
@@ -542,18 +571,35 @@ fn save_bulk_files(
                             height
                         },
                     };
-                    Some(
-                        apply_svg_export_options(&svg, &opts)
-                            .unwrap_or(svg)
-                            .into_bytes(),
-                    )
+                    let exported_svg = apply_svg_export_options(&svg, &opts).unwrap_or(svg);
+                    if export_options.format == "React" {
+                        let stem = path
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .unwrap_or("SvgComponent");
+                        react_component_source(&exported_svg, stem).map(String::into_bytes)
+                    } else {
+                        Ok(exported_svg.into_bytes())
+                    }
                 };
-                let status = if output.is_some_and(|bytes| std::fs::write(path, bytes).is_ok()) {
+                let result = output.and_then(|bytes| {
+                    std::fs::write(&path, bytes).map_err(|error| error.to_string())
+                });
+                let status = if result.is_ok() {
                     "Saved"
                 } else {
                     "Save failed"
                 };
                 set_bulk_status(ui_handle_for_saving.clone(), index, status.into());
+                if let Err(error) = result {
+                    let handle = ui_handle_for_saving.clone();
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = handle.upgrade() {
+                            ui.set_action_message(format!("{}: {error}", path.display()).into());
+                        }
+                    })
+                    .ok();
+                }
             }
         });
     })
@@ -848,6 +894,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         let entries = Arc::new(Mutex::new(Vec::<BulkFileData>::new()));
         bulk_window.set_files(ModelRc::from(files.clone()));
         bulk_window.set_checker_image(checker_image_for_bulk.clone());
+        bulk_window.on_output_example(|suffix, format| {
+            let extension = match format.as_str() {
+                "React" => "jsx",
+                "PNG" => "png",
+                _ => "svg",
+            };
+            output_file_name(Path::new("artwork.svg"), &suffix, extension).into()
+        });
 
         let bulk_weak = bulk_window.as_weak();
         let files_for_open = Rc::clone(&files);
@@ -1027,6 +1081,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             png_export_height,
         ) = if let Some(ui) = ui_handle.upgrade() {
             let state = ui.global::<AppState>();
+            state.set_export_error("".into());
             (
                 state.get_export_svg_include_viewbox(),
                 state.get_export_svg_include_dimensions(),
@@ -1045,6 +1100,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "PNG" => {
                     AsyncFileDialog::new()
                         .add_filter("PNG Image", &["png"])
+                        .save_file()
+                        .await
+                }
+                "React" => {
+                    AsyncFileDialog::new()
+                        .add_filter("React Component", &["jsx"])
+                        .set_file_name("component.jsx")
                         .save_file()
                         .await
                 }
@@ -1127,12 +1189,28 @@ fn main() -> Result<(), Box<dyn Error>> {
                             width: svg_export_width,
                             height: svg_export_height,
                         };
-                        let output = apply_svg_export_options(&optimized_svg, &opts)
+                        let exported_svg = apply_svg_export_options(&optimized_svg, &opts)
                             .unwrap_or(optimized_svg);
-                        std::fs::write(&path, output.as_bytes()).ok();
+                        let output = if format == "React" {
+                            let stem = path
+                                .file_stem()
+                                .and_then(|stem| stem.to_str())
+                                .unwrap_or("SvgComponent");
+                            react_component_source(&exported_svg, stem)
+                        } else {
+                            Ok(exported_svg)
+                        };
+                        let result = output.and_then(|output| {
+                            std::fs::write(&path, output.as_bytes())
+                                .map_err(|error| error.to_string())
+                        });
                         slint::invoke_from_event_loop(move || {
                             if let Some(ui) = h.upgrade() {
                                 ui.global::<AppState>().set_loading(false);
+                                if let Err(error) = result {
+                                    ui.global::<AppState>()
+                                        .set_export_error(format!("Export failed: {error}").into());
+                                }
                             }
                         })
                         .ok();
