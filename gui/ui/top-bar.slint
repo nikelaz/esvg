@@ -1,27 +1,22 @@
-import { Palette, Button } from "std-widgets.slint";
 import { AppState } from "./app-state.slint";
 import { NButton } from "./components/button.slint";
+import { Theme } from "./theme.slint";
 
 export component TopBar inherits Rectangle {
   callback open-file();
-
-  background: #1A1A1A;
-  border-radius: 5px;
-
+  height: 44px;
+  background: Theme.panel;
   HorizontalLayout {
-    padding: 10px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+    padding-left: 12px;
+    padding-right: 12px;
     spacing: 20px;
-    alignment: start;
-
-    NButton {
-      text: "Open File";
-      clicked => { root.open-file(); }
-    }
-
+    NButton { text: "Open SVG…"; clicked => { root.open-file(); } }
+    Rectangle { min-width: 0px; horizontal-stretch: 1; }
     HorizontalLayout {
-      spacing: -2px;
-      alignment: start;
-
+      horizontal-stretch: 0;
+      spacing: 0px;
       NButton {
         text: "Original";
         group: true;
@@ -30,7 +25,6 @@ export component TopBar inherits Rectangle {
         enabled: AppState.svg-loaded;
         clicked => { AppState.show-optimized = false; }
       }
-
       NButton {
         text: "Optimized";
         group: true;
@@ -42,4 +36,3 @@ export component TopBar inherits Rectangle {
     }
   }
 }
-

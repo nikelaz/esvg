@@ -1,22 +1,19 @@
 import { SidebarPanelHeader, SidebarPanelContent } from "./sidebar-panel.slint";
 import { AppState } from "../app-state.slint";
+import { Theme } from "../theme.slint";
 
 export component OptimizationPanel inherits VerticalLayout {
-  SidebarPanelHeader {
-    label: "Optimization";
-  }
-
+  SidebarPanelHeader { label: "Document"; }
   SidebarPanelContent {
     VerticalLayout {
-      spacing: 10px;
-      alignment: start;
-
-      Text {
-        text: "Original: " + AppState.original-size;
+      spacing: 12px;
+      HorizontalLayout {
+        Text { text: "Original size"; color: Theme.muted; }
+        Text { text: AppState.svg-loaded ? AppState.original-size : "—"; color: Theme.text; horizontal-alignment: right; }
       }
-
-      Text {
-        text: "Optimized: " + AppState.optimized-size;
+      HorizontalLayout {
+        Text { text: "Optimized size"; color: Theme.muted; }
+        Text { text: AppState.svg-loaded ? AppState.optimized-size : "—"; color: Theme.accent; horizontal-alignment: right; }
       }
     }
   }

@@ -1,44 +1,38 @@
 import { Sidebar } from "./sidebar/sidebar.slint";
 import { SvgViewer } from "./svg-viewer.slint";
 import { LoadingDialog } from "./loading-dialog.slint";
-import { Button, Palette } from "std-widgets.slint";
+import { Palette } from "std-widgets.slint";
 import { TopBar } from "./top-bar.slint";
 import { StatusBar } from "./status-bar.slint";
+import { Theme } from "./theme.slint";
 import { AppState } from "./app-state.slint";
 export { AppState }
 
 export component AppWindow inherits Window {
   callback open-file();
+  title: "ESVG · SVG Optimizer";
+  preferred-width: 1280px;
+  preferred-height: 800px;
+  min-width: 900px;
+  min-height: 600px;
+  background: Theme.background;
+  default-font-size: 13px;
+  default-font-family: "Inter";
+  default-font-weight: 400;
+  init => { Palette.color-scheme = ColorScheme.dark; }
 
-  min-width: 1280px;
-  min-height: 720px;
-  background: #141414;
-
-  HorizontalLayout {
-    padding: 5px;
-    spacing: 5px;
-
-    VerticalLayout {
-      spacing: 5px;
-      horizontal-stretch: 1;
-
-      TopBar {
-        open-file() => {
-          root.open-file();
-        }
-      }
-
-      SvgViewer {}
-
-      StatusBar {}
+  VerticalLayout {
+    spacing: 1px;
+    TopBar { open-file => { root.open-file(); } }
+    HorizontalLayout {
+      spacing: 1px;
+      SvgViewer { open-file => { root.open-file(); } }
+      Sidebar {}
     }
-
-    Sidebar {}
+    StatusBar {}
   }
 
   if AppState.loading && AppState.loading-dialog: LoadingDialog {
-    x: 0;
-    y: 0;
     width: root.width;
     height: root.height;
   }

@@ -1,7 +1,8 @@
-import { Palette } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
 
 export component NButton {
   in property <string> text;
+  in property <bool> primary: false;
   in property <bool> enabled: true;
   in-out property <bool> checked: false;
   in property <bool> group: false;
@@ -14,6 +15,8 @@ export component NButton {
 
   forward-focus: focus-scope;
   horizontal-stretch: 0;
+  height: 32px;
+  min-width: 64px;
 
   // Focus ring — visible only when keyboard-focused
   Rectangle {
@@ -30,30 +33,26 @@ export component NButton {
   }
 
   background-rect := Rectangle {
-    background: checked
-      ? #363636
-      : pressed
-        ? #363636
-        : touch.has-hover
-          ? transparent
-          : transparent;
+    background: root.primary
+      ? (pressed ? #2165bb : touch.has-hover ? #4a97f5 : Theme.accent)
+      : checked ? #454545 : pressed ? #383838 : touch.has-hover ? #3b3b3b : Theme.raised;
     border-top-left-radius: root.group && !root.group-first ? 0 : 5px;
     border-bottom-left-radius: root.group && !root.group-first ? 0 : 5px;
     border-top-right-radius: root.group && !root.group-last ? 0 : 5px;
     border-bottom-right-radius: root.group && !root.group-last ? 0 : 5px;
-    border-width: 2px;
-    border-color: #666666;
+    border-width: 1px;
+    border-color: root.primary ? transparent : Theme.border;
     opacity: root.enabled ? 1.0 : 0.5;
 
     HorizontalLayout {
-      padding-top: 10px;
-      padding-bottom: 10px;
+      padding-top: 6px;
+      padding-bottom: 6px;
       padding-left: 16px;
       padding-right: 16px;
 
       Text {
         text: root.text;
-        color: #ffffff;
+        color: Theme.text;
         font-size: 13px;
         horizontal-alignment: center;
         vertical-alignment: center;

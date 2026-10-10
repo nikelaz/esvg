@@ -1,22 +1,22 @@
-import { Palette, Switch } from "std-widgets.slint";
-import { SidebarPanelHeader, SidebarPanelContent } from "./sidebar-panel.slint";
+import { ScrollView } from "std-widgets.slint";
 import { PluginsPanel } from "./plugins-panel.slint";
 import { OptimizationPanel } from "./optimization-panel.slint";
 import { ExportPanel } from "./export-panel.slint";
+import { Theme } from "../theme.slint";
 
 export component Sidebar inherits Rectangle {
-  min-width: 280px;
-  background: #1A1A1A;
-  border-radius: 5px;
-  clip: true;
-
-  VerticalLayout {
-    padding: 0;
-    alignment: start;
-    min-width: 280px;
-
-    PluginsPanel {}
-    OptimizationPanel {}
-    ExportPanel {} 
+  width: 316px;
+  horizontal-stretch: 0;
+  background: Theme.panel;
+  ScrollView {
+    horizontal-scrollbar-policy: always-off;
+    VerticalLayout {
+      spacing: 1px;
+      padding: 0px;
+      alignment: start;
+      OptimizationPanel {}
+      ExportPanel {}
+      PluginsPanel {}
+    }
   }
 }

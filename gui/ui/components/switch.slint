@@ -1,3 +1,5 @@
+import { Theme } from "../theme.slint";
+
 export component NSwitch {
     in property <bool> enabled: true;
     in property <string> text;
@@ -5,7 +7,7 @@ export component NSwitch {
     callback toggled;
 
     property <bool> focus-from-mouse: false;
-    private property <color> text-color: #ffffff;
+    private property <color> text-color: Theme.text;
 
     function toggle-checked() {
         if !root.enabled { return; }
@@ -13,16 +15,16 @@ export component NSwitch {
         root.toggled();
     }
 
-    min-height: max(20px, layout.min-height);
+    min-height: max(24px, layout.min-height);
     vertical-stretch: 0;
-    horizontal-stretch: 0;
+    horizontal-stretch: 1;
     forward-focus: focus-scope;
 
     states [
         disabled when !root.enabled : {
             rail.background: root.checked ? #2a4a8a : transparent;
             thumb.background: #444444;
-            root.text-color: #555555;
+            root.text-color: #858585;
         }
         pressed when touch.pressed : {
             rail.background: root.checked ? #2a52c9 : #2a2a2a;
@@ -33,7 +35,7 @@ export component NSwitch {
             thumb.background: root.checked ? #ffffff : #666666;
         }
         checked when root.checked : {
-            rail.background: #1C66C1;
+            rail.background: Theme.accent;
             rail.border-width: 0px;
             thumb.background: #ffffff;
         }
@@ -46,20 +48,20 @@ export component NSwitch {
             alignment: center;
 
             Rectangle {
-                width: 40px;
-                height: 20px;
+                width: 30px;
+                height: 16px;
 
                 rail := Rectangle {
                     border-radius: 10px;
-                    border-width: 2px;
+                    border-width: 1px;
                     border-color: #666666;
                     background: transparent;
                 }
 
                 thumb := Rectangle {
-                    x: root.checked ? parent.width - self.width - 4px : 4px;
+                    x: root.checked ? parent.width - self.width - 3px : 3px;
                     y: (parent.height - self.height) / 2;
-                    width: 12px;
+                    width: 10px;
                     height: self.width;
                     border-radius: self.height / 2;
                     background: #666666;
@@ -70,8 +72,8 @@ export component NSwitch {
                 // Focus ring — keyboard only
                 if focus-scope.has-focus && !root.focus-from-mouse : Rectangle {
                     border-radius: rail.border-radius + 3px;
-                    border-width: 2px;
-                    border-color: #1C66C1;
+                    border-width: 1px;
+                    border-color: Theme.accent;
                     x: -3px;
                     y: -3px;
                     width: parent.width + 6px;
@@ -86,6 +88,8 @@ export component NSwitch {
             font-size: 13px;
             vertical-alignment: center;
             horizontal-alignment: left;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
         }
     }
 

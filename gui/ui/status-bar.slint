@@ -1,35 +1,32 @@
 import { ProgressIndicator } from "std-widgets.slint";
 import { AppState } from "./app-state.slint";
+import { Theme } from "./theme.slint";
 
 export component StatusBar inherits Rectangle {
-  background: #1A1A1A;
-  border-radius: 5px;
-
+  height: 30px;
+  background: Theme.panel;
   HorizontalLayout {
+    padding-left: 16px;
+    padding-right: 16px;
+    spacing: 12px;
     alignment: start;
-    spacing: 20px;
-    padding-top: 7px;
-    padding-bottom: 5px;
-    padding-left: 10px;
-    padding-right: 10px;
-
-    if AppState.loading && !AppState.loading-dialog: VerticalLayout {
-      alignment: center;
-
-      ProgressIndicator {
-        width: 120px;
-        height: 4px;
-        indeterminate: true;
-      }
+    if AppState.loading && !AppState.loading-dialog: ProgressIndicator {
+      width: 72px;
+      height: 4px;
+      indeterminate: true;
     }
-
-    if AppState.loading && !AppState.loading-dialog: Text {
-      text: AppState.loading-status;
+    Text {
+      text: AppState.loading ? AppState.loading-status : AppState.svg-loaded ? "Ready" : "Open an SVG to get started";
+      color: Theme.muted;
+      font-size: 11px;
+      vertical-alignment: center;
     }
-
-    if !AppState.loading || AppState.loading-dialog: Text {
-      text: "Ready";
+    Rectangle { horizontal-stretch: 1; }
+    if AppState.svg-loaded: Text {
+      text: "Scroll to zoom  ·  Drag to pan";
+      color: Theme.muted;
+      font-size: 11px;
+      vertical-alignment: center;
     }
-
   }
 }

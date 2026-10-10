@@ -1,16 +1,15 @@
-import { ScrollView } from "std-widgets.slint";
 import { SidebarPanelHeader, SidebarPanelContent } from "./sidebar-panel.slint";
 import { AppState } from "../app-state.slint";
 import { NSwitch } from "../components/switch.slint";
 
 export component PluginsPanel inherits VerticalLayout {
   SidebarPanelHeader {
-    label: "Plugins";
+    label: "Optimization plugins";
   }
 
   SidebarPanelContent {
     VerticalLayout {
-      spacing: 10px;
+      spacing: 8px;
       alignment: start;
 
       NSwitch {
