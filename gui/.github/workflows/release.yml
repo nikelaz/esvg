@@ -34,11 +34,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       CARGO_TERM_COLOR: always
+      SLINT_NO_QT: '1'
       RUSTFLAGS: ${{ matrix.os == 'windows-2022' && '-C target-feature=+crt-static' || '' }}
 
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          submodules: true
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -52,6 +55,7 @@ jobs:
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
             libxkbcommon-dev \
+            libxkbcommon-x11-dev \
             libxcursor-dev \
             libxi-dev \
             libxinerama-dev \
@@ -91,6 +95,9 @@ jobs:
         run: |
           set -euo pipefail
           app="dist/ESVG.app"
+          version="${GITHUB_REF_NAME#v}"
+          bundle_version="${version%%-*}"
+          bundle_version="${bundle_version%%+*}"
           mkdir -p "$app/Contents/MacOS"
           cp "target/${{ matrix.target }}/release/slint-rust-template" "$app/Contents/MacOS/esvg-gui"
           chmod +x "$app/Contents/MacOS/esvg-gui"
@@ -103,11 +110,12 @@ jobs:
             <key>CFBundleIdentifier</key><string>org.esvg.gui</string>
             <key>CFBundleName</key><string>ESVG</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>${GITHUB_REF_NAME#v}</string>
-            <key>CFBundleVersion</key><string>${GITHUB_REF_NAME#v}</string>
+            <key>CFBundleShortVersionString</key><string>${bundle_version}</string>
+            <key>CFBundleVersion</key><string>${bundle_version}</string>
           </dict>
           </plist>
           EOF
+          plutil -lint "$app/Contents/Info.plist"
           ditto -c -k --sequesterRsrc --keepParent "$app" "dist/esvg-gui-${GITHUB_REF_NAME}-${{ matrix.asset }}.zip"
 
       - name: Package Windows archive
@@ -151,5 +159,6 @@ jobs:
         with:
           name: ESVG ${{ github.ref_name }}
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true
           files: dist/*
