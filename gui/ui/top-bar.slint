@@ -4,6 +4,7 @@ import { Theme } from "./theme.slint";
 
 export component TopBar inherits Rectangle {
   callback open-file();
+  callback open-bulk-window();
   height: 44px;
   background: Theme.panel;
   HorizontalLayout {
@@ -13,6 +14,7 @@ export component TopBar inherits Rectangle {
     padding-right: 12px;
     spacing: 20px;
     NButton { text: "Open SVG…"; clicked => { root.open-file(); } }
+    NButton { text: "Bulk Optimize…"; clicked => { root.open-bulk-window(); } }
     Rectangle { min-width: 0px; horizontal-stretch: 1; }
     HorizontalLayout {
       horizontal-stretch: 0;

@@ -2,6 +2,7 @@ import { ScrollView } from "std-widgets.slint";
 import { PluginsPanel } from "./plugins-panel.slint";
 import { OptimizationPanel } from "./optimization-panel.slint";
 import { ExportPanel } from "./export-panel.slint";
+import { AppState } from "../app-state.slint";
 import { Theme } from "../theme.slint";
 
 export component Sidebar inherits Rectangle {
@@ -16,7 +17,23 @@ export component Sidebar inherits Rectangle {
       alignment: start;
       OptimizationPanel {}
       ExportPanel {}
-      PluginsPanel {}
+      PluginsPanel {
+        svg-loaded: AppState.svg-loaded;
+        plugin-apply-transforms <=> AppState.plugin-apply-transforms;
+        plugin-collapse-groups <=> AppState.plugin-collapse-groups;
+        plugin-combine-paths <=> AppState.plugin-combine-paths;
+        plugin-css-to-attributes <=> AppState.plugin-css-to-attributes;
+        plugin-mangle-ids <=> AppState.plugin-mangle-ids;
+        plugin-number-precision <=> AppState.plugin-number-precision;
+        plugin-optimize-colors <=> AppState.plugin-optimize-colors;
+        plugin-remove-empty-text <=> AppState.plugin-remove-empty-text;
+        plugin-remove-unnecessary-attrs <=> AppState.plugin-remove-unnecessary-attrs;
+        plugin-remove-unnecessary-clip-paths <=> AppState.plugin-remove-unnecessary-clip-paths;
+        plugin-shape-to-path <=> AppState.plugin-shape-to-path;
+        plugin-simplify-paths <=> AppState.plugin-simplify-paths;
+        plugin-sort-attrs <=> AppState.plugin-sort-attrs;
+        request-optimize => { AppState.request-optimize(); }
+      }
     }
   }
 }

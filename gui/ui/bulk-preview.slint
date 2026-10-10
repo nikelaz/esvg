@@ -1,0 +1,147 @@
+import { NButton } from "./components/button.slint";
+import { Theme } from "./theme.slint";
+
+export component BulkPreview inherits Rectangle {
+  in property <image> original-image;
+  in property <image> optimized-image;
+  property <bool> show-optimized: true;
+  in property <image> checker-image;
+  in property <length> svg-width;
+  in property <length> svg-height;
+
+  property <float> fit-zoom: root.svg-width > 0 && root.svg-height > 0
+    ? max(0.01, min(1.0, min((root.width - 32px) / root.svg-width, (root.height - 70px) / root.svg-height)))
+    : 1.0;
+  property <float> zoom: root.fit-zoom;
+  property <float> max-zoom: 6.0;
+  property <length> pan-x: (root.width - root.svg-width * root.zoom) / 2;
+  property <length> pan-y: (root.height - 38px - root.svg-height * root.zoom) / 2;
+  property <bool> is-panning: false;
+  property <length> last-mouse-x;
+  property <length> last-mouse-y;
+
+  function apply-zoom(next-zoom: float, anchor-x: length, anchor-y: length) {
+    root.pan-x = anchor-x - (anchor-x - root.pan-x) * next-zoom / root.zoom;
+    root.pan-y = anchor-y - (anchor-y - root.pan-y) * next-zoom / root.zoom;
+    root.zoom = next-zoom;
+  }
+
+  function reset-view() {
+    root.zoom = root.fit-zoom;
+    root.pan-x = (root.width - root.svg-width * root.zoom) / 2;
+    root.pan-y = (root.height - 38px - root.svg-height * root.zoom) / 2;
+  }
+
+  height: 430px;
+  background: Theme.panel;
+  border-width: 1px;
+  border-color: Theme.border;
+  border-radius: 5px;
+
+  VerticalLayout {
+    spacing: 0px;
+    Rectangle {
+      height: 38px;
+      background: Theme.raised;
+      HorizontalLayout {
+        padding-top: 5.5px;
+        padding-bottom: 5.5px;
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 8px;
+        HorizontalLayout {
+          spacing: 0px;
+          NButton {
+            text: "Original"; height: 27px;
+            group: true; group-first: true;
+            checked: !root.show-optimized;
+            clicked => { root.show-optimized = false; }
+          }
+          NButton {
+            text: "Optimized"; height: 27px;
+            group: true; group-last: true;
+            checked: root.show-optimized;
+            clicked => { root.show-optimized = true; }
+          }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        NButton { text: "Fit"; height: 27px; clicked => { root.reset-view(); } }
+      }
+    }
+    Rectangle {
+      vertical-stretch: 1;
+      clip: true;
+      background: Theme.background;
+
+      TouchArea {
+        scroll-event(event) => {
+          if event.delta-y != 0 && root.svg-width > 0 {
+            root.apply-zoom(
+              event.delta-y > 0 ? min(root.max-zoom, root.zoom * 1.1) : max(0.1, root.zoom / 1.1),
+              self.mouse-x,
+              self.mouse-y
+            );
+          }
+          accept
+        }
+        pointer-event(event) => {
+          if (event.button == PointerEventButton.left) {
+            if (event.kind == PointerEventKind.down) {
+              root.is-panning = true;
+              root.last-mouse-x = self.mouse-x;
+              root.last-mouse-y = self.mouse-y;
+            } else {
+              root.is-panning = false;
+            }
+          }
+        }
+        moved() => {
+          if (root.is-panning) {
+            root.pan-x += self.mouse-x - root.last-mouse-x;
+            root.pan-y += self.mouse-y - root.last-mouse-y;
+            root.last-mouse-x = self.mouse-x;
+            root.last-mouse-y = self.mouse-y;
+          }
+        }
+
+        Rectangle {
+          width: parent.width;
+          height: parent.height;
+          clip: true;
+          for row in Math.ceil(self.height / 256px): Rectangle {
+            y: row * 256px;
+            height: 256px;
+            width: parent.width;
+            for column in Math.ceil(self.width / 256px): Image {
+              x: column * 256px;
+              width: 256px;
+              height: 256px;
+              source: root.checker-image;
+              image-fit: fill;
+              image-rendering: pixelated;
+            }
+          }
+        }
+        Image {
+          source: root.show-optimized ? root.optimized-image : root.original-image;
+          x: root.pan-x;
+          y: root.pan-y;
+          width: root.svg-width * root.zoom;
+          height: root.svg-height * root.zoom;
+          image-fit: fill;
+        }
+      }
+
+      if root.svg-width <= 0: Text {
+        text: "Preview unavailable";
+        color: Theme.muted;
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+      }
+    }
+  }
+}

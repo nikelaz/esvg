@@ -1,8 +1,23 @@
 import { SidebarPanelHeader, SidebarPanelContent } from "./sidebar-panel.slint";
-import { AppState } from "../app-state.slint";
 import { NSwitch } from "../components/switch.slint";
 
 export component PluginsPanel inherits VerticalLayout {
+  in property <bool> svg-loaded;
+  in-out property <bool> plugin-apply-transforms;
+  in-out property <bool> plugin-collapse-groups;
+  in-out property <bool> plugin-combine-paths;
+  in-out property <bool> plugin-css-to-attributes;
+  in-out property <bool> plugin-mangle-ids;
+  in-out property <bool> plugin-number-precision;
+  in-out property <bool> plugin-optimize-colors;
+  in-out property <bool> plugin-remove-empty-text;
+  in-out property <bool> plugin-remove-unnecessary-attrs;
+  in-out property <bool> plugin-remove-unnecessary-clip-paths;
+  in-out property <bool> plugin-shape-to-path;
+  in-out property <bool> plugin-simplify-paths;
+  in-out property <bool> plugin-sort-attrs;
+  callback request-optimize();
+
   SidebarPanelHeader {
     label: "Optimization plugins";
   }
@@ -14,119 +29,93 @@ export component PluginsPanel inherits VerticalLayout {
 
       NSwitch {
         text: "Apply Transforms";
-        checked <=> AppState.plugin-apply-transforms;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-apply-transforms;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "Collapse Groups";
-        checked <=> AppState.plugin-collapse-groups;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-collapse-groups;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "Combine Paths";
-        checked <=> AppState.plugin-combine-paths;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-combine-paths;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "CSS to Attributes";
-        checked <=> AppState.plugin-css-to-attributes;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-css-to-attributes;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "Mangle IDs";
-        checked <=> AppState.plugin-mangle-ids;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-mangle-ids;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "Number Precision";
-        checked <=> AppState.plugin-number-precision;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-number-precision;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "Optimize Colors";
-        checked <=> AppState.plugin-optimize-colors;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-optimize-colors;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "Remove Empty Text";
-        checked <=> AppState.plugin-remove-empty-text;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-remove-empty-text;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "Remove Unnecessary Attrs";
-        checked <=> AppState.plugin-remove-unnecessary-attrs;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-remove-unnecessary-attrs;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "Remove Unnecessary Clip Paths";
-        checked <=> AppState.plugin-remove-unnecessary-clip-paths;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-remove-unnecessary-clip-paths;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "Shape to Path";
-        checked <=> AppState.plugin-shape-to-path;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-shape-to-path;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "Simplify Paths";
-        checked <=> AppState.plugin-simplify-paths;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-simplify-paths;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
 
       NSwitch {
         text: "Sort Attrs";
-        checked <=> AppState.plugin-sort-attrs;
-        enabled: AppState.svg-loaded;
-        toggled => {
-          AppState.request-optimize();
-        }
+        checked <=> root.plugin-sort-attrs;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
       }
     }
   }

@@ -6,10 +6,12 @@ import { TopBar } from "./top-bar.slint";
 import { StatusBar } from "./status-bar.slint";
 import { Theme } from "./theme.slint";
 import { AppState } from "./app-state.slint";
-export { AppState }
+import { BulkWindow } from "./bulk-window.slint";
+export { AppState, BulkWindow }
 
 export component AppWindow inherits Window {
   callback open-file();
+  callback open-bulk-window();
   title: "ESVG · SVG Optimizer";
   preferred-width: 1280px;
   preferred-height: 800px;
@@ -23,7 +25,10 @@ export component AppWindow inherits Window {
 
   VerticalLayout {
     spacing: 1px;
-    TopBar { open-file => { root.open-file(); } }
+    TopBar {
+      open-file => { root.open-file(); }
+      open-bulk-window => { root.open-bulk-window(); }
+    }
     HorizontalLayout {
       spacing: 1px;
       SvgViewer { open-file => { root.open-file(); } }

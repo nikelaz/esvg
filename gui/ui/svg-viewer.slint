@@ -35,10 +35,10 @@ export component SvgViewer inherits Rectangle {
   background: Theme.background;
 
   if AppState.svg-loaded: Rectangle {
-    x: root.pan_x;
-    y: root.pan_y;
-    width: AppState.svg-width * root.zoom;
-    height: AppState.svg-height * root.zoom;
+    x: 0px;
+    y: 0px;
+    width: root.width;
+    height: root.height;
     clip: true;
     for row in Math.ceil(self.height / 256px): Rectangle {
       y: row * 256px;
