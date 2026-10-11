@@ -1,9 +1,15 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and publish (for example v0.1.0)
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag }}
 
 permissions:
   contents: read
@@ -19,10 +25,20 @@ jobs:
     outputs:
       run_id: ${{ steps.find.outputs.run_id }}
     steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Resolve release commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Wait for successful main build
         id: find
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.commit.outputs.sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -31,8 +47,8 @@ jobs:
           deadline=$((SECONDS + wait_timeout_seconds))
           while (( SECONDS < deadline )); do
             build="$(gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/runs?head_sha=${GITHUB_SHA}&per_page=100" \
-              --jq '[.workflow_runs[] | select(.head_branch == "main" and (.event == "push" or .event == "workflow_dispatch"))] | sort_by(.run_number) | ((map(select(.conclusion == "success")) | last) // last) | select(. != null) | [.id, .status, (.conclusion // "pending")] | @tsv')"
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/runs?head_sha=${RELEASE_SHA}&per_page=100" \
+              --jq '[.workflow_runs[] | select(.head_branch == "main" and .event == "workflow_dispatch")] | sort_by(.run_number) | ((map(select(.conclusion == "success")) | last) // last) | select(. != null) | [.id, .status, (.conclusion // "pending")] | @tsv')"
             if [[ -n "$build" ]]; then
               IFS=$'\t' read -r run_id status conclusion <<< "$build"
               if [[ "$conclusion" == "success" ]]; then
@@ -40,16 +56,16 @@ jobs:
                 exit 0
               fi
               if [[ "$status" == "completed" ]]; then
-                printf 'Main build %s finished with %s for commit %s.\n' "$run_id" "$conclusion" "$GITHUB_SHA" >&2
+                printf 'Main build %s finished with %s for commit %s.\n' "$run_id" "$conclusion" "$RELEASE_SHA" >&2
                 exit 1
               fi
               printf 'Waiting for main build %s (%s).\n' "$run_id" "$status"
             else
-              printf 'Waiting for a main build to appear for commit %s.\n' "$GITHUB_SHA"
+              printf 'Waiting for a main build to appear for commit %s.\n' "$RELEASE_SHA"
             fi
             sleep "$poll_interval_seconds"
           done
-          printf 'Timed out after %s seconds waiting for a successful main build for commit %s.\n' "$wait_timeout_seconds" "$GITHUB_SHA" >&2
+          printf 'Timed out after %s seconds waiting for a successful main build for commit %s.\n' "$wait_timeout_seconds" "$RELEASE_SHA" >&2
           exit 1
 
   package:
@@ -76,6 +92,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download binary from matching main build
         uses: actions/download-artifact@v6
@@ -138,12 +156,12 @@ jobs:
           For desktop integration, install esvg on PATH and copy the files in share/
           into the matching ~/.local/share/applications and ~/.local/share/icons locations.
           EOF
-          tar -czf "dist/esvg-${GITHUB_REF_NAME}-${{ matrix.asset }}.tar.gz" -C dist/stage esvg README.txt share
+          tar -czf "dist/esvg-${RELEASE_TAG}-${{ matrix.asset }}.tar.gz" -C dist/stage esvg README.txt share
 
       - name: Package Linux AppImage
         if: runner.os == 'Linux'
         shell: bash
-        run: crates/gui/scripts/package-appimage.sh "${GITHUB_REF_NAME}" dist/bin/esvg
+        run: crates/gui/scripts/package-appimage.sh "${RELEASE_TAG}" dist/bin/esvg
 
       - name: Package macOS application
         if: runner.os == 'macOS'
@@ -151,7 +169,7 @@ jobs:
         run: |
           set -euo pipefail
           app="dist/ESVG.app"
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           bundle_version="${version%%-*}"
           bundle_version="${bundle_version%%+*}"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -174,13 +192,13 @@ jobs:
           </plist>
           EOF
           plutil -lint "$app/Contents/Info.plist"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/esvg-${GITHUB_REF_NAME}-${{ matrix.asset }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/esvg-${RELEASE_TAG}-${{ matrix.asset }}.zip"
 
       - name: Package Windows archive
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $version = $env:RELEASE_TAG -replace '^v', ''
           New-Item -ItemType Directory -Force dist/stage | Out-Null
           Copy-Item dist/bin/esvg.exe dist/stage/esvg.exe
           $readme = @"
@@ -189,13 +207,13 @@ jobs:
           Run esvg.exe to start the application.
           "@
           $readme | Set-Content dist/stage/README.txt
-          Compress-Archive -Path dist/stage/* -DestinationPath "dist/esvg-${env:GITHUB_REF_NAME}-${{ matrix.asset }}.zip" -Force
+          Compress-Archive -Path dist/stage/* -DestinationPath "dist/esvg-${env:RELEASE_TAG}-${{ matrix.asset }}.zip" -Force
 
       - name: Package Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $env:APP_VERSION = $env:GITHUB_REF_NAME -replace '^v', ''
+          $env:APP_VERSION = $env:RELEASE_TAG -replace '^v', ''
           $env:APP_BINARY = (Resolve-Path dist/bin/esvg.exe).Path
           $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $compiler)) {
@@ -231,9 +249,9 @@ jobs:
       - name: Attach packages to the GitHub release
         uses: softprops/action-gh-release@v3
         with:
-          name: ESVG ${{ github.ref_name }}
+          name: ESVG ${{ env.RELEASE_TAG }}
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          make_latest: ${{ !contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+          make_latest: ${{ !contains(env.RELEASE_TAG, '-') }}
           fail_on_unmatched_files: true
           files: dist/*
