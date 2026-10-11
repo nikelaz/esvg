@@ -103,9 +103,36 @@ jobs:
           github-token: ${{ github.token }}
           path: dist/bin
 
-      - name: Restore Linux binary executable permission
-        if: runner.os == 'Linux'
-        run: chmod +x dist/bin/esvg
+      # Tags from before the CLI existed have no crates/cli and no CLI build
+      # artifact, so they are packaged without it. Every later tag requires it.
+      - name: Check whether this release includes the CLI
+        id: cli
+        shell: bash
+        run: |
+          if [[ -d crates/cli ]]; then
+            echo "included=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "included=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${RELEASE_TAG} has no crates/cli, so it is packaged without the command line tool."
+          fi
+
+      - name: Download CLI binary from matching main build
+        if: steps.cli.outputs.included == 'true'
+        uses: actions/download-artifact@v6
+        with:
+          name: cli-binary-${{ matrix.asset }}
+          run-id: ${{ needs.find-build.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: dist/cli
+
+      - name: Restore binary executable permissions
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          chmod +x dist/bin/esvg
+          if [[ -f dist/cli/esvg-cli ]]; then
+            chmod +x dist/cli/esvg-cli
+          fi
 
       - name: Install Linux packaging dependencies
         if: runner.os == 'Linux'
@@ -133,10 +160,20 @@ jobs:
           mkdir -p dist/stage/share/applications
           cp dist/bin/esvg dist/stage/esvg
           chmod +x dist/stage/esvg
+          contents=(esvg README.txt share)
+          if [[ -f dist/cli/esvg-cli ]]; then
+            mkdir -p dist/stage/cli
+            cp dist/cli/esvg-cli dist/stage/cli/esvg
+            chmod +x dist/stage/cli/esvg
+            contents+=(cli)
+            # The CLI is also released as a standalone file next to the AppImage.
+            cp dist/cli/esvg-cli "dist/esvg-cli-${RELEASE_TAG}-linux-x86_64"
+            chmod +x "dist/esvg-cli-${RELEASE_TAG}-linux-x86_64"
+          fi
           for size in 16 24 32 48 64 128 256 512; do
             icon_dir="dist/stage/share/icons/hicolor/${size}x${size}/apps"
             mkdir -p "$icon_dir"
-            cp "assets/icons/linux/esvg-${size}x${size}.png" "$icon_dir/esvg.png"
+            cp "crates/gui/assets/icons/linux/esvg-${size}x${size}.png" "$icon_dir/esvg.png"
           done
           cat > dist/stage/share/applications/esvg.desktop <<'EOF'
           [Desktop Entry]
@@ -156,7 +193,10 @@ jobs:
           For desktop integration, install esvg on PATH and copy the files in share/
           into the matching ~/.local/share/applications and ~/.local/share/icons locations.
           EOF
-          tar -czf "dist/esvg-${RELEASE_TAG}-${{ matrix.asset }}.tar.gz" -C dist/stage esvg README.txt share
+          if [[ -d dist/stage/cli ]]; then
+            echo "The command line tool is in cli/esvg. Copy it to a folder on your PATH, such as ~/.local/bin." >> dist/stage/README.txt
+          fi
+          tar -czf "dist/esvg-${RELEASE_TAG}-${{ matrix.asset }}.tar.gz" -C dist/stage "${contents[@]}"
 
       - name: Package Linux AppImage
         if: runner.os == 'Linux'
@@ -174,8 +214,13 @@ jobs:
           bundle_version="${bundle_version%%+*}"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           cp dist/bin/esvg "$app/Contents/MacOS/esvg"
-          cp assets/icons/macos/esvg.icns "$app/Contents/Resources/esvg.icns"
+          cp crates/gui/assets/icons/macos/esvg.icns "$app/Contents/Resources/esvg.icns"
           chmod +x "$app/Contents/MacOS/esvg"
+          # Executables belong in Contents/MacOS, so the bundle can be code signed later.
+          if [[ -f dist/cli/esvg-cli ]]; then
+            cp dist/cli/esvg-cli "$app/Contents/MacOS/esvg-cli"
+            chmod +x "$app/Contents/MacOS/esvg-cli"
+          fi
           cat > "$app/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -192,7 +237,28 @@ jobs:
           </plist>
           EOF
           plutil -lint "$app/Contents/Info.plist"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/esvg-${RELEASE_TAG}-${{ matrix.asset }}.zip"
+          stage="dist/macos-stage"
+          mkdir -p "$stage"
+          mv "$app" "$stage/"
+          cat > "$stage/README.txt" <<'EOF'
+          ESVG
+
+          Open ESVG.app to start the application.
+
+          If macOS says ESVG cannot be opened because it is from an unidentified
+          developer, run this once in Terminal:
+            xattr -dr com.apple.quarantine /Applications/ESVG.app
+          EOF
+          if [[ -f "$stage/ESVG.app/Contents/MacOS/esvg-cli" ]]; then
+            cat >> "$stage/README.txt" <<'EOF'
+
+          To use the command line tool, run this once in Terminal:
+            sudo mkdir -p /usr/local/bin
+            sudo ln -sf "/Applications/ESVG.app/Contents/MacOS/esvg-cli" /usr/local/bin/esvg
+          Then run: esvg --help
+          EOF
+          fi
+          ditto -c -k --sequesterRsrc "$stage" "dist/esvg-${RELEASE_TAG}-${{ matrix.asset }}.zip"
 
       - name: Package Windows archive
         if: runner.os == 'Windows'
@@ -206,6 +272,11 @@ jobs:
 
           Run esvg.exe to start the application.
           "@
+          if (Test-Path dist/cli/esvg-cli.exe) {
+            New-Item -ItemType Directory -Force dist/stage/cli | Out-Null
+            Copy-Item dist/cli/esvg-cli.exe dist/stage/cli/esvg.exe
+            $readme += "`nThe command line tool is in cli\esvg.exe."
+          }
           $readme | Set-Content dist/stage/README.txt
           Compress-Archive -Path dist/stage/* -DestinationPath "dist/esvg-${env:RELEASE_TAG}-${{ matrix.asset }}.zip" -Force
 
@@ -215,6 +286,9 @@ jobs:
         run: |
           $env:APP_VERSION = $env:RELEASE_TAG -replace '^v', ''
           $env:APP_BINARY = (Resolve-Path dist/bin/esvg.exe).Path
+          if (Test-Path dist/cli/esvg-cli.exe) {
+            $env:CLI_BINARY = (Resolve-Path dist/cli/esvg-cli.exe).Path
+          }
           $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $compiler)) {
             throw "Inno Setup compiler not found: $compiler"

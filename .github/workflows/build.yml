@@ -18,16 +18,19 @@ jobs:
             target: x86_64-unknown-linux-gnu
             asset: linux-x86_64
             binary: esvg
+            cli_binary: esvg-cli
           - name: macOS Apple Silicon
             os: macos-15
             target: aarch64-apple-darwin
             asset: macos-aarch64
             binary: esvg
+            cli_binary: esvg-cli
           - name: Windows x86_64
             os: windows-2022
             target: x86_64-pc-windows-msvc
             asset: windows-x86_64
             binary: esvg.exe
+            cli_binary: esvg-cli.exe
     runs-on: ${{ matrix.os }}
     env:
       CARGO_TERM_COLOR: always
@@ -71,11 +74,23 @@ jobs:
       - name: Build release binary
         run: cargo build --release -p esvg --locked --target ${{ matrix.target }}
 
+      - name: Build CLI release binary
+        run: cargo build --release -p esvg-cli --locked --target ${{ matrix.target }}
+
       - name: Upload release binary for main builds
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v6
         with:
           name: binary-${{ matrix.asset }}
           path: target/${{ matrix.target }}/release/${{ matrix.binary }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload CLI release binary for main builds
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v6
+        with:
+          name: cli-binary-${{ matrix.asset }}
+          path: target/${{ matrix.target }}/release/${{ matrix.cli_binary }}
           if-no-files-found: error
           retention-days: 90

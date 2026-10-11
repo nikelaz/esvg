@@ -1,0 +1,27 @@
+[package]
+name = "esvg-cli"
+version = "0.1.0"
+license = "PolyForm-Shield-1.0.0"
+edition = "2024"
+description = "Command line interface for ESVG, an SVG optimizer"
+
+# The binary is built as `esvg-cli` so it does not collide with the GUI's `esvg`
+# binary in the shared target directory. Packaging installs it as `esvg`.
+[[bin]]
+name = "esvg-cli"
+path = "src/main.rs"
+
+[lib]
+name = "esvg_cli"
+path = "src/lib.rs"
+
+[dependencies]
+esvg-rs = { path = "../core" }
+clap = { version = "4", features = ["derive", "wrap_help"] }
+glob = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+xmltree = "0.11"

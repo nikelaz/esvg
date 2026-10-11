@@ -17,6 +17,13 @@ The process works as follows:
 
 This approach ensures that only the most effective transformations are applied, producing the smallest possible file size with no perceivable visible quality loss.
 
+## Command line
+
+ESVG also ships a command line tool, `esvg`, for scripts, CI and agents. It
+optimizes single files, folders and glob patterns, and every plugin can be
+turned on or off. See [crates/cli/README.md](crates/cli/README.md) for
+installation and usage.
+
 ## State
 
 **This project is in very early development. Most of the features are not implemented and it cannot be used effectively for any optimization.**
