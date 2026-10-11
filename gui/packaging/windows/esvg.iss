@@ -1,7 +1,8 @@
 #define AppVersion GetEnv("APP_VERSION")
+#define AppBinary GetEnv("APP_BINARY")
 
-#if AppVersion == ""
-  #error APP_VERSION must be set when compiling this installer
+#if AppVersion == "" || AppBinary == ""
+  #error APP_VERSION and APP_BINARY must be set when compiling this installer
 #endif
 
 [Setup]
@@ -26,7 +27,7 @@ WizardStyle=modern
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "..\..\target\x86_64-pc-windows-msvc\release\esvg.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#AppBinary}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\ESVG"; Filename: "{app}\esvg.exe"
