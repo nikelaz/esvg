@@ -231,7 +231,8 @@ mod tests {
         let error = plan(&files(&["icons/a.svg", "other/a.svg"]), &target).unwrap_err();
         assert!(error.contains("icons/a.svg"), "{error}");
         assert!(error.contains("other/a.svg"), "{error}");
-        assert!(error.contains("build/a.svg"), "{error}");
+        let destination = PathBuf::from("build").join("a.svg");
+        assert!(error.contains(&destination.display().to_string()), "{error}");
     }
 
     #[test]
