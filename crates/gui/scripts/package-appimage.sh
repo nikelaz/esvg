@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version="${1:?Usage: scripts/package-appimage.sh <version> [binary-path]}"
+version="${1:?Usage: crates/gui/scripts/package-appimage.sh <version> [binary-path]}"
 binary="${2:-target/release/esvg}"
 output="dist/esvg-${version}-linux-x86_64.AppImage"
-repo_root="$(pwd)"
+gui_root="$(cd "$(dirname "$0")/.." && pwd)"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
@@ -16,7 +16,7 @@ fi
 mkdir -p "$(dirname "$output")"
 output="$(realpath -m "$output")"
 cp "$binary" "$work_dir/esvg"
-cp assets/icons/linux/esvg-256x256.png "$work_dir/esvg.png"
+cp "$gui_root/assets/icons/linux/esvg-256x256.png" "$work_dir/esvg.png"
 
 curl --fail --location --silent --show-error \
     https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
@@ -32,7 +32,7 @@ cd "$work_dir"
 ./linuxdeploy-x86_64.AppImage \
     --appdir AppDir \
     --executable esvg \
-    --desktop-file "$repo_root/packaging/linux/esvg.desktop" \
+    --desktop-file "$gui_root/packaging/linux/esvg.desktop" \
     --icon-file esvg.png \
     --output appimage
 

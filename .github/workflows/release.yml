@@ -143,7 +143,7 @@ jobs:
       - name: Package Linux AppImage
         if: runner.os == 'Linux'
         shell: bash
-        run: scripts/package-appimage.sh "${GITHUB_REF_NAME}" dist/bin/esvg
+        run: crates/gui/scripts/package-appimage.sh "${GITHUB_REF_NAME}" dist/bin/esvg
 
       - name: Package macOS application
         if: runner.os == 'macOS'
@@ -201,7 +201,7 @@ jobs:
           if (-not (Test-Path $compiler)) {
             throw "Inno Setup compiler not found: $compiler"
           }
-          & $compiler "packaging/windows/esvg.iss"
+          & $compiler "crates/gui/packaging/windows/esvg.iss"
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }

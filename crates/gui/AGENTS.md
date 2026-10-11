@@ -22,14 +22,14 @@ There are no tests currently.
 
 ## Architecture
 
-This is a desktop GUI app built with **Slint** (UI framework) and **Rust** (backend logic). It provides a visual interface for optimizing SVG files using `esvg-rs` (a git submodule at `vendor/esvg-rs`).
+This is a desktop GUI app built with **Slint** (UI framework) and **Rust** (backend logic). It provides a visual interface for optimizing SVG files using `esvg-rs` (the sibling `crates/core` crate in this workspace).
 
 ### Key layers
 
 - **`ui/*.slint`** — Slint UI definitions. `build.rs` compiles these into Rust via `slint_build::compile("ui/main-window.slint")`. All components are imported transitively from `main-window.slint`.
 - **`ui/app-state.slint`** — The single global state singleton (`AppState`) shared across all UI components and the Rust backend. All plugin toggles, export options, image buffers, and loading state live here.
 - **`src/main.rs`** — Entire Rust backend. Sets up the Slint window, wires callbacks (`on_open_file`, `on_request_optimize`, `on_export_file`), and drives background threads for SVG loading, optimization, and rendering.
-- **`vendor/esvg-rs`** — The SVG optimization library (git submodule). Exposes `optimize()`, `PluginConfig`, `apply_svg_export_options()`, and `SvgExportOptions`.
+- **`crates/core`** — The SVG optimization library (`esvg-rs`, a workspace member). Exposes `optimize()`, `PluginConfig`, `apply_svg_export_options()`, and `SvgExportOptions`.
 
 ### Data flow
 
