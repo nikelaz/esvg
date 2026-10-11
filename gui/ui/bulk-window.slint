@@ -192,8 +192,8 @@ export component BulkWindow inherits Window {
           vertical-alignment: center;
         }
         Rectangle { horizontal-stretch: 1; }
-        NButton { text: "Add SVGs…"; clicked => { root.open-files(); } }
-        NButton { text: "Optimize and Save…"; primary: true; enabled: root.files.length > 0; clicked => { root.optimize-and-save(); } }
+        NButton { text: "Add SVGs"; clicked => { root.open-files(); } }
+        NButton { text: "Optimize and Save"; primary: true; enabled: root.files.length > 0; clicked => { root.optimize-and-save(); } }
       }
     }
 
@@ -248,7 +248,7 @@ export component BulkWindow inherits Window {
               }
               HorizontalLayout {
                 alignment: center;
-                NButton { text: "Choose SVGs…"; primary: true; clicked => { root.open-files(); } }
+                NButton { text: "Choose SVGs"; primary: true; clicked => { root.open-files(); } }
               }
             }
           }

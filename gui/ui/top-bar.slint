@@ -13,8 +13,8 @@ export component TopBar inherits Rectangle {
     padding-left: 12px;
     padding-right: 12px;
     spacing: 20px;
-    NButton { text: "Open SVG…"; clicked => { root.open-file(); } }
-    NButton { text: "Bulk Optimize…"; clicked => { root.open-bulk-window(); } }
+    NButton { text: "Open SVG"; clicked => { root.open-file(); } }
+    NButton { text: "Bulk Optimize"; clicked => { root.open-bulk-window(); } }
     Rectangle { min-width: 0px; horizontal-stretch: 1; }
     HorizontalLayout {
       horizontal-stretch: 0;

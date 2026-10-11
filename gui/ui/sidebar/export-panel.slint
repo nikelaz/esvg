@@ -175,7 +175,7 @@ export component ExportPanel inherits VerticalLayout {
       }
 
       NButton {
-        text: "Export " + format-combo.current-value + "…";
+        text: "Export " + format-combo.current-value;
         primary: true;
         horizontal-stretch: 1;
         enabled: AppState.svg-loaded && !AppState.loading;
