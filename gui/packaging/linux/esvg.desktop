@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=ESVG
+Exec=esvg
+Icon=esvg
+Terminal=false
+Categories=Graphics;
+MimeType=image/svg+xml;

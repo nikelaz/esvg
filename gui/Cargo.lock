@@ -4292,7 +4292,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "slint-rust-template"
+name = "esvg"
 version = "0.1.0"
 dependencies = [
  "esvg-rs",
