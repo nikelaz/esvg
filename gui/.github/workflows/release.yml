@@ -1,0 +1,239 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  find-build:
+    name: Find main build for this commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run_id: ${{ steps.find.outputs.run_id }}
+    steps:
+      - name: Wait for successful main build
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          wait_timeout_seconds=2400
+          poll_interval_seconds=15
+          deadline=$((SECONDS + wait_timeout_seconds))
+          while (( SECONDS < deadline )); do
+            build="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/runs?head_sha=${GITHUB_SHA}&per_page=100" \
+              --jq '[.workflow_runs[] | select(.head_branch == "main" and (.event == "push" or .event == "workflow_dispatch"))] | sort_by(.run_number) | ((map(select(.conclusion == "success")) | last) // last) | select(. != null) | [.id, .status, (.conclusion // "pending")] | @tsv')"
+            if [[ -n "$build" ]]; then
+              IFS=$'\t' read -r run_id status conclusion <<< "$build"
+              if [[ "$conclusion" == "success" ]]; then
+                echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              if [[ "$status" == "completed" ]]; then
+                printf 'Main build %s finished with %s for commit %s.\n' "$run_id" "$conclusion" "$GITHUB_SHA" >&2
+                exit 1
+              fi
+              printf 'Waiting for main build %s (%s).\n' "$run_id" "$status"
+            else
+              printf 'Waiting for a main build to appear for commit %s.\n' "$GITHUB_SHA"
+            fi
+            sleep "$poll_interval_seconds"
+          done
+          printf 'Timed out after %s seconds waiting for a successful main build for commit %s.\n' "$wait_timeout_seconds" "$GITHUB_SHA" >&2
+          exit 1
+
+  package:
+    name: Package ${{ matrix.name }}
+    needs: find-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            asset: linux-x86_64
+          - name: macOS Apple Silicon
+            os: macos-15
+            asset: macos-aarch64
+          - name: Windows x86_64
+            os: windows-2022
+            asset: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Download binary from matching main build
+        uses: actions/download-artifact@v6
+        with:
+          name: binary-${{ matrix.asset }}
+          run-id: ${{ needs.find-build.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: dist/bin
+
+      - name: Restore Linux binary executable permission
+        if: runner.os == 'Linux'
+        run: chmod +x dist/bin/esvg
+
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libfontconfig1 \
+            libfreetype6 \
+            libwayland-client0 \
+            libx11-6 \
+            libxcb-shape0 \
+            libxcb-xfixes0 \
+            libxkbcommon0 \
+            libxkbcommon-x11-0 \
+            libxcursor1 \
+            libxi6 \
+            libxinerama1 \
+            libxrandr2
+
+      - name: Package Linux archive
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/stage/share/applications
+          cp dist/bin/esvg dist/stage/esvg
+          chmod +x dist/stage/esvg
+          for size in 16 24 32 48 64 128 256 512; do
+            icon_dir="dist/stage/share/icons/hicolor/${size}x${size}/apps"
+            mkdir -p "$icon_dir"
+            cp "assets/icons/linux/esvg-${size}x${size}.png" "$icon_dir/esvg.png"
+          done
+          cat > dist/stage/share/applications/esvg.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=ESVG
+          Exec=esvg
+          Icon=esvg
+          Terminal=false
+          Categories=Graphics;
+          MimeType=image/svg+xml;
+          EOF
+          cat > dist/stage/README.txt <<'EOF'
+          ESVG
+
+          Run ./esvg to start the application.
+          This build requires the host system's standard Linux desktop libraries.
+          For desktop integration, install esvg on PATH and copy the files in share/
+          into the matching ~/.local/share/applications and ~/.local/share/icons locations.
+          EOF
+          tar -czf "dist/esvg-${GITHUB_REF_NAME}-${{ matrix.asset }}.tar.gz" -C dist/stage esvg README.txt share
+
+      - name: Package Linux AppImage
+        if: runner.os == 'Linux'
+        shell: bash
+        run: scripts/package-appimage.sh "${GITHUB_REF_NAME}" dist/bin/esvg
+
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="dist/ESVG.app"
+          version="${GITHUB_REF_NAME#v}"
+          bundle_version="${version%%-*}"
+          bundle_version="${bundle_version%%+*}"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp dist/bin/esvg "$app/Contents/MacOS/esvg"
+          cp assets/icons/macos/esvg.icns "$app/Contents/Resources/esvg.icns"
+          chmod +x "$app/Contents/MacOS/esvg"
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>esvg</string>
+            <key>CFBundleIconFile</key><string>esvg.icns</string>
+            <key>CFBundleIdentifier</key><string>org.esvg.gui</string>
+            <key>CFBundleName</key><string>ESVG</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${bundle_version}</string>
+            <key>CFBundleVersion</key><string>${bundle_version}</string>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$app/Contents/Info.plist"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/esvg-${GITHUB_REF_NAME}-${{ matrix.asset }}.zip"
+
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          New-Item -ItemType Directory -Force dist/stage | Out-Null
+          Copy-Item dist/bin/esvg.exe dist/stage/esvg.exe
+          $readme = @"
+          ESVG $version
+
+          Run esvg.exe to start the application.
+          "@
+          $readme | Set-Content dist/stage/README.txt
+          Compress-Archive -Path dist/stage/* -DestinationPath "dist/esvg-${env:GITHUB_REF_NAME}-${{ matrix.asset }}.zip" -Force
+
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:APP_VERSION = $env:GITHUB_REF_NAME -replace '^v', ''
+          $env:APP_BINARY = (Resolve-Path dist/bin/esvg.exe).Path
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $compiler)) {
+            throw "Inno Setup compiler not found: $compiler"
+          }
+          & $compiler "packaging/windows/esvg.iss"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Upload packaged application
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ matrix.asset }}
+          path: dist/esvg-*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged applications
+        uses: actions/download-artifact@v6
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Attach packages to the GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ESVG ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: dist/*

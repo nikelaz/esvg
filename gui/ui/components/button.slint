@@ -1,0 +1,90 @@
+import { Theme } from "../theme.slint";
+
+export component NButton {
+  in property <string> text;
+  in property <bool> primary: false;
+  in property <bool> enabled: true;
+  in-out property <bool> checked: false;
+  in property <bool> group: false;
+  in property <bool> group-first: false;
+  in property <bool> group-last: false;
+  callback clicked;
+
+  property <bool> pressed: touch.pressed;
+  property <bool> focus-from-mouse: false;
+
+  forward-focus: focus-scope;
+  horizontal-stretch: 0;
+  height: 32px;
+  min-width: 64px;
+
+  // Focus ring — visible only when keyboard-focused
+  Rectangle {
+    border-top-left-radius: root.group && !root.group-first ? 0 : 7px;
+    border-bottom-left-radius: root.group && !root.group-first ? 0 : 7px;
+    border-top-right-radius: root.group && !root.group-last ? 0 : 7px;
+    border-bottom-right-radius: root.group && !root.group-last ? 0 : 7px;
+    border-width: focus-scope.has-focus && !root.focus-from-mouse ? 2px : 0px;
+    border-color: #1C66C1;
+    x: -3px;
+    y: -3px;
+    width: root.width + 6px;
+    height: root.height + 6px;
+  }
+
+  background-rect := Rectangle {
+    background: root.primary
+      ? (pressed ? #2165bb : touch.has-hover ? #4a97f5 : Theme.accent)
+      : checked ? #454545 : pressed ? #383838 : touch.has-hover ? #3b3b3b : Theme.raised;
+    border-top-left-radius: root.group && !root.group-first ? 0 : 5px;
+    border-bottom-left-radius: root.group && !root.group-first ? 0 : 5px;
+    border-top-right-radius: root.group && !root.group-last ? 0 : 5px;
+    border-bottom-right-radius: root.group && !root.group-last ? 0 : 5px;
+    border-width: 1px;
+    border-color: root.primary ? transparent : Theme.border;
+    opacity: root.enabled ? 1.0 : 0.5;
+
+    HorizontalLayout {
+      padding-top: 6px;
+      padding-bottom: 6px;
+      padding-left: 16px;
+      padding-right: 16px;
+
+      Text {
+        text: root.text;
+        color: Theme.text;
+        font-size: 13px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+      }
+    }
+  }
+
+  touch := TouchArea {
+    enabled: root.enabled;
+    clicked => {
+      root.focus-from-mouse = true;
+      focus-scope.focus();
+      root.clicked();
+    }
+  }
+
+  focus-scope := FocusScope {
+    width: 0;
+    height: 0;
+    enabled: root.enabled;
+    changed has-focus => {
+      if !self.has-focus {
+        root.focus-from-mouse = false;
+      }
+    }
+    key-pressed(event) => {
+      if event.text == Key.Return || event.text == Key.Space {
+        root.clicked();
+        accept
+      } else {
+        reject
+      }
+    }
+  }
+}

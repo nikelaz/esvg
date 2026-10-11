@@ -1,0 +1,45 @@
+import { Sidebar } from "./sidebar/sidebar.slint";
+import { SvgViewer } from "./svg-viewer.slint";
+import { LoadingDialog } from "./loading-dialog.slint";
+import { Palette } from "std-widgets.slint";
+import { TopBar } from "./top-bar.slint";
+import { StatusBar } from "./status-bar.slint";
+import { Theme } from "./theme.slint";
+import { AppState } from "./app-state.slint";
+import { BulkWindow } from "./bulk-window.slint";
+export { AppState, BulkWindow }
+
+export component AppWindow inherits Window {
+  callback open-file();
+  callback open-bulk-window();
+  title: "ESVG";
+  icon: @image-url("../assets/icons/esvg-1024.png");
+  preferred-width: 1280px;
+  preferred-height: 800px;
+  min-width: 900px;
+  min-height: 600px;
+  background: Theme.background;
+  default-font-size: 13px;
+  default-font-family: "Inter";
+  default-font-weight: 400;
+  init => { Palette.color-scheme = ColorScheme.dark; }
+
+  VerticalLayout {
+    spacing: 1px;
+    TopBar {
+      open-file => { root.open-file(); }
+      open-bulk-window => { root.open-bulk-window(); }
+    }
+    HorizontalLayout {
+      spacing: 1px;
+      SvgViewer { open-file => { root.open-file(); } }
+      Sidebar {}
+    }
+    StatusBar {}
+  }
+
+  if AppState.loading && AppState.loading-dialog: LoadingDialog {
+    width: root.width;
+    height: root.height;
+  }
+}

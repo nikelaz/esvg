@@ -1,0 +1,122 @@
+import { SidebarPanelHeader, SidebarPanelContent } from "./sidebar-panel.slint";
+import { NSwitch } from "../components/switch.slint";
+
+export component PluginsPanel inherits VerticalLayout {
+  in property <bool> svg-loaded;
+  in-out property <bool> plugin-apply-transforms;
+  in-out property <bool> plugin-collapse-groups;
+  in-out property <bool> plugin-combine-paths;
+  in-out property <bool> plugin-css-to-attributes;
+  in-out property <bool> plugin-mangle-ids;
+  in-out property <bool> plugin-number-precision;
+  in-out property <bool> plugin-optimize-colors;
+  in-out property <bool> plugin-remove-empty-text;
+  in-out property <bool> plugin-remove-unnecessary-attrs;
+  in-out property <bool> plugin-remove-unnecessary-clip-paths;
+  in-out property <bool> plugin-shape-to-path;
+  in-out property <bool> plugin-simplify-paths;
+  in-out property <bool> plugin-sort-attrs;
+  callback request-optimize();
+
+  SidebarPanelHeader {
+    label: "Optimization plugins";
+  }
+
+  SidebarPanelContent {
+    VerticalLayout {
+      spacing: 8px;
+      alignment: start;
+
+      NSwitch {
+        text: "Apply Transforms";
+        checked <=> root.plugin-apply-transforms;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "Collapse Groups";
+        checked <=> root.plugin-collapse-groups;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "Combine Paths";
+        checked <=> root.plugin-combine-paths;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "CSS to Attributes";
+        checked <=> root.plugin-css-to-attributes;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "Mangle IDs";
+        checked <=> root.plugin-mangle-ids;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "Number Precision";
+        checked <=> root.plugin-number-precision;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "Optimize Colors";
+        checked <=> root.plugin-optimize-colors;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "Remove Empty Text";
+        checked <=> root.plugin-remove-empty-text;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "Remove Unnecessary Attrs";
+        checked <=> root.plugin-remove-unnecessary-attrs;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "Remove Unnecessary Clip Paths";
+        checked <=> root.plugin-remove-unnecessary-clip-paths;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "Shape to Path";
+        checked <=> root.plugin-shape-to-path;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "Simplify Paths";
+        checked <=> root.plugin-simplify-paths;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+
+      NSwitch {
+        text: "Sort Attrs";
+        checked <=> root.plugin-sort-attrs;
+        enabled: root.svg-loaded;
+        toggled => { root.request-optimize(); }
+      }
+    }
+  }
+}

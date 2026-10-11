@@ -1,0 +1,22 @@
+import { Theme } from "../theme.slint";
+
+export component SidebarPanelHeader inherits Rectangle {
+  in property <string> label;
+  height: 38px;
+  background: Theme.raised;
+  HorizontalLayout {
+    padding-left: 16px;
+    Text {
+      text: root.label;
+      color: Theme.text;
+      font-size: 12px;
+      font-weight: 600;
+      vertical-alignment: center;
+    }
+  }
+}
+
+export component SidebarPanelContent inherits VerticalLayout {
+  padding: 16px;
+  alignment: start;
+}

@@ -1,0 +1,402 @@
+import { ScrollView, LineEdit, ComboBox, Palette } from "std-widgets.slint";
+import { NButton } from "./components/button.slint";
+import { NSwitch } from "./components/switch.slint";
+import { BulkPreview } from "./bulk-preview.slint";
+import { PluginsPanel } from "./sidebar/plugins-panel.slint";
+import { SidebarPanelHeader, SidebarPanelContent } from "./sidebar/sidebar-panel.slint";
+import { Theme } from "./theme.slint";
+
+export struct BulkSvg {
+  name: string,
+  status: string,
+  original-size: string,
+  optimized-size: string,
+  original-image: image,
+  optimized-image: image,
+  width: length,
+  height: length,
+  expanded: bool,
+  plugin-apply-transforms: bool,
+  plugin-collapse-groups: bool,
+  plugin-combine-paths: bool,
+  plugin-css-to-attributes: bool,
+  plugin-mangle-ids: bool,
+  plugin-number-precision: bool,
+  plugin-optimize-colors: bool,
+  plugin-remove-empty-text: bool,
+  plugin-remove-unnecessary-attrs: bool,
+  plugin-remove-unnecessary-clip-paths: bool,
+  plugin-shape-to-path: bool,
+  plugin-simplify-paths: bool,
+  plugin-sort-attrs: bool,
+}
+
+component BulkSvgCard inherits Rectangle {
+  in property <BulkSvg> file;
+  in property <int> index;
+  in property <bool> selected;
+  in property <image> checker-image;
+  in property <length> preview-height: 430px;
+  callback select-file(index: int);
+
+  height: root.file.expanded ? root.preview-height + 86px : 62px;
+  vertical-stretch: 0;
+  background: root.selected ? #303942 : Theme.panel;
+  border-width: 1px;
+  border-color: root.selected ? Theme.accent : Theme.border;
+  border-radius: 5px;
+
+  VerticalLayout {
+    spacing: 0px;
+    padding: 1px;
+    TouchArea {
+      height: 60px;
+      clicked => { root.select-file(root.index); }
+      HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 12px;
+        Text {
+          text: root.file.expanded ? "⌄" : "›";
+          width: 18px;
+          color: Theme.muted;
+          font-size: 18px;
+          vertical-alignment: center;
+          horizontal-alignment: center;
+        }
+        VerticalLayout {
+          vertical-stretch: 0;
+          alignment: center;
+          spacing: 2px;
+          Text {
+            text: root.file.name;
+            color: Theme.text;
+            font-size: 13px;
+            font-weight: 600;
+          }
+          Text {
+            text: root.file.status;
+            color: root.file.status == "Ready" ? Theme.muted : Theme.accent;
+            font-size: 11px;
+          }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+          alignment: center;
+          spacing: 3px;
+          Text {
+            text: "Original  " + root.file.original-size;
+            color: Theme.muted;
+            font-size: 11px;
+            horizontal-alignment: right;
+          }
+          Text {
+            text: "Optimized  " + root.file.optimized-size;
+            color: Theme.accent;
+            font-size: 11px;
+            horizontal-alignment: right;
+          }
+        }
+      }
+    }
+
+    if root.file.expanded: Rectangle {
+      height: root.preview-height + 24px;
+      background: Theme.background;
+      HorizontalLayout {
+        padding: 12px;
+        spacing: 10px;
+        BulkPreview {
+          height: root.preview-height;
+          original-image: root.file.original-image;
+          optimized-image: root.file.optimized-image;
+          checker-image: root.checker-image;
+          svg-width: root.file.width;
+          svg-height: root.file.height;
+          horizontal-stretch: 1;
+        }
+      }
+    }
+  }
+}
+
+export component BulkWindow inherits Window {
+  icon: @image-url("../assets/icons/esvg-1024.png");
+  callback open-files();
+  callback dropped-files(data: string);
+  callback select-file(index: int);
+  callback request-optimize(index: int);
+  callback optimize-and-save();
+  pure callback output-example(suffix: string, format: string) -> string;
+
+  in property <[BulkSvg]> files;
+  in property <image> checker-image;
+  in-out property <int> selected-index: -1;
+  in-out property <string> output-suffix: "-esvg-optimized.svg";
+  in-out property <string> output-format: "SVG";
+  in-out property <bool> export-include-viewbox: true;
+  in-out property <bool> export-include-dimensions: false;
+  in-out property <float> export-width: 0;
+  in-out property <float> export-height: 0;
+  in-out property <float> export-png-width: 0;
+  in-out property <float> export-png-height: 0;
+  in-out property <string> action-message: "";
+
+  in-out property <bool> plugin-apply-transforms: true;
+  in-out property <bool> plugin-collapse-groups: true;
+  in-out property <bool> plugin-combine-paths: true;
+  in-out property <bool> plugin-css-to-attributes: true;
+  in-out property <bool> plugin-mangle-ids: true;
+  in-out property <bool> plugin-number-precision: true;
+  in-out property <bool> plugin-optimize-colors: true;
+  in-out property <bool> plugin-remove-empty-text: true;
+  in-out property <bool> plugin-remove-unnecessary-attrs: true;
+  in-out property <bool> plugin-remove-unnecessary-clip-paths: true;
+  in-out property <bool> plugin-shape-to-path: true;
+  in-out property <bool> plugin-simplify-paths: true;
+  in-out property <bool> plugin-sort-attrs: true;
+
+  title: "ESVG · Bulk Optimizer";
+  preferred-width: 1440px;
+  preferred-height: 900px;
+  min-width: 1100px;
+  min-height: 680px;
+  background: Theme.background;
+  default-font-size: 13px;
+  default-font-family: "Inter";
+  default-font-weight: 400;
+  init => { Palette.color-scheme = ColorScheme.dark; }
+
+  VerticalLayout {
+    spacing: 1px;
+    Rectangle {
+      height: 52px;
+      background: Theme.panel;
+      HorizontalLayout {
+        padding-top: 10px;
+        padding-bottom: 10px;
+        padding-left: 18px;
+        padding-right: 16px;
+        spacing: 10px;
+        Text {
+          text: "Bulk Optimization";
+          color: Theme.text;
+          font-size: 15px;
+          font-weight: 600;
+          vertical-alignment: center;
+        }
+        Text {
+          text: root.files.length == 1 ? "1 SVG" : root.files.length + " SVGs";
+          color: Theme.muted;
+          font-size: 12px;
+          vertical-alignment: center;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        NButton { text: "Add SVGs"; clicked => { root.open-files(); } }
+        NButton { text: "Optimize and Save"; primary: true; enabled: root.files.length > 0; clicked => { root.optimize-and-save(); } }
+      }
+    }
+
+    HorizontalLayout {
+      spacing: 1px;
+      Rectangle {
+        horizontal-stretch: 1;
+        background: Theme.background;
+        VerticalLayout {
+          spacing: 8px;
+          padding: 14px;
+          Rectangle {
+            height: 38px;
+            HorizontalLayout {
+              spacing: 8px;
+              Text {
+                text: "SVG files";
+                color: Theme.text;
+                font-size: 13px;
+                font-weight: 600;
+                vertical-alignment: center;
+              }
+              Text {
+                text: "Drop SVGs into this panel to add them";
+                color: Theme.muted;
+                font-size: 11px;
+                vertical-alignment: center;
+              }
+            }
+          }
+
+          if root.files.length == 0: Rectangle {
+            vertical-stretch: 1;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 6px;
+            VerticalLayout {
+              alignment: center;
+              spacing: 10px;
+              Text {
+                text: "Add SVGs to start a batch";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 600;
+                horizontal-alignment: center;
+              }
+              Text {
+                text: "Drop SVG files here, or choose them from a folder.";
+                color: Theme.muted;
+                horizontal-alignment: center;
+              }
+              HorizontalLayout {
+                alignment: center;
+                NButton { text: "Choose SVGs"; primary: true; clicked => { root.open-files(); } }
+              }
+            }
+          }
+
+          if root.files.length > 0: file-list := ScrollView {
+            vertical-stretch: 1;
+            horizontal-scrollbar-policy: always-off;
+            VerticalLayout {
+              spacing: 8px;
+              padding-bottom: 14px;
+              for file[index] in root.files: BulkSvgCard {
+                preview-height: min(430px, max(220px, file-list.height - 100px));
+                file: file;
+                index: index;
+                selected: root.selected-index == index;
+                checker-image: root.checker-image;
+                select-file(index) => { root.select-file(index); }
+              }
+            }
+          }
+
+        }
+        DropArea {
+          x: 0px;
+          y: 0px;
+          width: parent.width;
+          height: parent.height;
+          can-drop(event) => event.mime-type == "text/uri-list";
+          dropped(event) => { root.dropped-files(event.data); }
+        }
+      }
+
+      Rectangle {
+        width: 330px;
+        background: Theme.panel;
+        ScrollView {
+          vertical-scrollbar-policy: always-on;
+          horizontal-scrollbar-policy: always-off;
+          VerticalLayout {
+            spacing: 1px;
+          if root.selected-index >= 0: Rectangle {
+            height: 128px;
+            VerticalLayout {
+              SidebarPanelHeader { label: "Selected SVG"; }
+              SidebarPanelContent {
+                VerticalLayout {
+                  spacing: 6px;
+                  Text {
+                    text: root.files[root.selected-index].name;
+                    color: Theme.text;
+                    font-size: 12px;
+                    font-weight: 600;
+                  }
+                  Text {
+                    text: "Original   " + root.files[root.selected-index].original-size;
+                    color: Theme.muted;
+                    font-size: 11px;
+                  }
+                  Text {
+                    text: "Optimized   " + root.files[root.selected-index].optimized-size;
+                    color: Theme.accent;
+                    font-size: 11px;
+                  }
+                }
+              }
+            }
+          }
+
+          PluginsPanel {
+            svg-loaded: root.selected-index >= 0
+              ? root.files[root.selected-index].status == "Ready"
+                || root.files[root.selected-index].status == "Saved"
+                || root.files[root.selected-index].status == "Save failed"
+              : false;
+            plugin-apply-transforms <=> root.plugin-apply-transforms;
+            plugin-collapse-groups <=> root.plugin-collapse-groups;
+            plugin-combine-paths <=> root.plugin-combine-paths;
+            plugin-css-to-attributes <=> root.plugin-css-to-attributes;
+            plugin-mangle-ids <=> root.plugin-mangle-ids;
+            plugin-number-precision <=> root.plugin-number-precision;
+            plugin-optimize-colors <=> root.plugin-optimize-colors;
+            plugin-remove-empty-text <=> root.plugin-remove-empty-text;
+            plugin-remove-unnecessary-attrs <=> root.plugin-remove-unnecessary-attrs;
+            plugin-remove-unnecessary-clip-paths <=> root.plugin-remove-unnecessary-clip-paths;
+            plugin-shape-to-path <=> root.plugin-shape-to-path;
+            plugin-simplify-paths <=> root.plugin-simplify-paths;
+            plugin-sort-attrs <=> root.plugin-sort-attrs;
+            request-optimize => {
+              if root.selected-index >= 0 { root.request-optimize(root.selected-index); }
+            }
+          }
+
+            SidebarPanelHeader { label: "Export"; }
+            SidebarPanelContent {
+              VerticalLayout {
+                spacing: 8px;
+                Text { text: "File format"; color: Theme.muted; }
+                ComboBox {
+                  model: ["SVG", "PNG", "React/JSX Component"];
+                  current-value <=> root.output-format;
+                }
+                if root.output-format == "SVG" || root.output-format == "React/JSX Component": VerticalLayout {
+                  spacing: 8px;
+                  NSwitch { text: "Include viewBox"; checked <=> root.export-include-viewbox; }
+                  NSwitch { text: "Include width & height"; checked <=> root.export-include-dimensions; }
+                  if root.export-include-dimensions: VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Width"; color: Theme.muted; }
+                    LineEdit { text: root.export-width > 0 ? root.export-width : ""; input-type: number; edited(value) => { if value != "" { root.export-width = value.to-float(); } } }
+                    Text { text: "Height"; color: Theme.muted; }
+                    LineEdit { text: root.export-height > 0 ? root.export-height : ""; input-type: number; edited(value) => { if value != "" { root.export-height = value.to-float(); } } }
+                  }
+                }
+                if root.output-format == "PNG": VerticalLayout {
+                  spacing: 8px;
+                  Text { text: "PNG width"; color: Theme.muted; }
+                  LineEdit { text: root.export-png-width > 0 ? root.export-png-width : ""; input-type: number; edited(value) => { if value != "" { root.export-png-width = value.to-float(); } } }
+                  Text { text: "PNG height"; color: Theme.muted; }
+                  LineEdit { text: root.export-png-height > 0 ? root.export-png-height : ""; input-type: number; edited(value) => { if value != "" { root.export-png-height = value.to-float(); } } }
+                }
+                SidebarPanelHeader { label: "Output names"; }
+                Text { text: "Suffix applied to every file"; color: Theme.muted; font-size: 11px; }
+                LineEdit {
+                  text <=> root.output-suffix;
+                  placeholder-text: "-esvg-optimized.svg";
+                }
+                Text {
+                  text: "Example: " + root.output-example(root.output-suffix, root.output-format);
+                  color: Theme.muted;
+                  font-size: 10px;
+                }
+                Text {
+                  text: "Choose a destination folder with Optimize and Save.";
+                  color: Theme.muted;
+                  font-size: 10px;
+                  wrap: word-wrap;
+                }
+                if root.action-message != "": Text {
+                  text: root.action-message;
+                  color: Theme.accent;
+                  font-size: 10px;
+                  wrap: word-wrap;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
