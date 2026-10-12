@@ -24,11 +24,6 @@ optimizes single files, folders and glob patterns, and every plugin can be
 turned on or off. See [crates/cli/README.md](crates/cli/README.md) for
 installation and usage.
 
-## State
-
-**This project is in very early development. Most of the features are not implemented and it cannot be used effectively for any optimization.**
-
-
 ## Testing
 
 - `cargo test` runs the unit tests and `tests/corpus.rs`, which optimizes every SVG in `tests/cases` and `tests/corpus` and checks that the output parses and is not larger than the input.
