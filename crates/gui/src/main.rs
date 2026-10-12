@@ -16,8 +16,10 @@ use rfd::AsyncFileDialog;
 #[cfg(test)]
 mod app_tests;
 mod react_export;
+mod viewport;
 use react_export::react_component_source;
 use slint::{Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
+use viewport::{render_overview, show_document, Variant, ViewRequest, ViewportRenderer};
 
 const REACT_EXPORT_FORMAT: &str = "React/JSX Component";
 
@@ -100,6 +102,7 @@ fn make_checker_image() -> SharedPixelBuffer<Rgba8Pixel> {
     buf
 }
 
+// tiny-skia writes premultiplied RGBA; pass this buffer to Image::from_rgba8_premultiplied.
 fn render_svg(tree: &usvg::Tree, zoom: f32) -> SharedPixelBuffer<Rgba8Pixel> {
     let width = tree.size().width();
     let height = tree.size().height();
@@ -107,15 +110,17 @@ fn render_svg(tree: &usvg::Tree, zoom: f32) -> SharedPixelBuffer<Rgba8Pixel> {
     let scaled_width = ((width * zoom).ceil() as u32).max(1);
     let scaled_height = ((height * zoom).ceil() as u32).max(1);
 
-    let mut pixmap = tiny_skia::Pixmap::new(scaled_width, scaled_height).unwrap();
-    resvg::render(
-        tree,
-        tiny_skia::Transform::from_scale(zoom, zoom),
-        &mut pixmap.as_mut(),
-    );
-
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(scaled_width, scaled_height);
-    buffer.make_mut_bytes().copy_from_slice(pixmap.data());
+    {
+        let mut pixmap =
+            tiny_skia::PixmapMut::from_bytes(buffer.make_mut_bytes(), scaled_width, scaled_height)
+                .unwrap();
+        resvg::render(
+            tree,
+            tiny_skia::Transform::from_scale(zoom, zoom),
+            &mut pixmap,
+        );
+    }
 
     buffer
 }
@@ -301,8 +306,8 @@ fn load_bulk_file(
                     file.status = "Ready".into();
                     file.original_size = format_size(svg_bytes.len()).into();
                     file.optimized_size = format_size(optimized_size).into();
-                    file.original_image = Image::from_rgba8(original_image);
-                    file.optimized_image = Image::from_rgba8(optimized_image);
+                    file.original_image = Image::from_rgba8_premultiplied(original_image);
+                    file.optimized_image = Image::from_rgba8_premultiplied(optimized_image);
                     file.width = width;
                     file.height = height;
                     files.set_row_data(index, file);
@@ -479,7 +484,7 @@ fn run_bulk_optimization(
                 if let Some(mut file) = files.row_data(job.index) {
                     file.status = "Ready".into();
                     file.optimized_size = format_size(optimized_size).into();
-                    file.optimized_image = Image::from_rgba8(optimized_image);
+                    file.optimized_image = Image::from_rgba8_premultiplied(optimized_image);
                     files.set_row_data(job.index, file);
                 }
             }
@@ -633,6 +638,7 @@ fn save_bulk_files(
 
 fn render_optimized(
     ui_handle: slint::Weak<AppWindow>,
+    renderer: Arc<ViewportRenderer>,
     svg_string: String,
     config: PluginConfig,
     generation: Arc<AtomicU64>,
@@ -644,7 +650,6 @@ fn render_optimized(
     slint::invoke_from_event_loop(move || {
         if let Some(ui) = ui_handle.upgrade() {
             let state = ui.global::<AppState>();
-            state.set_zoom_enabled(false);
             state.set_loading(true);
             state.set_loading_status("Optimizing...".into());
         }
@@ -693,23 +698,15 @@ fn render_optimized(
         })
         .ok();
 
-        let opt_1x = render_svg(&optimized_tree, 1.0);
+        let overview = render_overview(&optimized_tree);
         cancel_return!();
-        let h = ui_handle2.clone();
         slint::invoke_from_event_loop(move || {
-            if let Some(ui) = h.upgrade() {
-                ui.global::<AppState>()
-                    .set_svg_image_optimized(Image::from_rgba8(opt_1x));
+            if generation.load(Ordering::SeqCst) != my_gen {
+                return;
             }
-        })
-        .ok();
-
-        let opt_6x = render_svg(&optimized_tree, 6.0);
-        cancel_return!();
-        slint::invoke_from_event_loop(move || {
             if let Some(ui) = ui_handle2.upgrade() {
+                show_document(&ui, &renderer, Variant::Optimized, optimized_tree, overview);
                 let state = ui.global::<AppState>();
-                state.set_svg_image_optimized(Image::from_rgba8(opt_6x));
                 state.set_zoom_enabled(true);
                 state.set_loading(false);
             }
@@ -720,6 +717,7 @@ fn render_optimized(
 
 fn load_svg(
     ui_handle: slint::Weak<AppWindow>,
+    renderer: Arc<ViewportRenderer>,
     svg_store: Arc<Mutex<String>>,
     optimized_store: Arc<Mutex<String>>,
     path: std::path::PathBuf,
@@ -755,14 +753,15 @@ fn load_svg(
         })
         .ok();
 
-        // 2. Original @ 1x
-        let orig_1x = render_svg(&original_tree, 1.0);
+        // 2. Original overview; sharp frames are rendered on demand by the viewport renderer
+        let orig_overview = render_overview(&original_tree);
         let h = ui_handle.clone();
+        let r = Arc::clone(&renderer);
         slint::invoke_from_event_loop(move || {
             if let Some(ui) = h.upgrade() {
-                let state = ui.global::<AppState>();
-                state.set_svg_image_original(Image::from_rgba8(orig_1x));
-                state.set_loading_status("Optimizing...".into());
+                show_document(&ui, &r, Variant::Original, original_tree, orig_overview);
+                ui.global::<AppState>()
+                    .set_loading_status("Optimizing...".into());
             }
         })
         .ok();
@@ -786,38 +785,21 @@ fn load_svg(
         })
         .ok();
 
-        // 4. Optimized @ 1x → close dialog, mark loaded, switch to status bar
-        let opt_1x = render_svg(&optimized_tree, 1.0);
-        let h = ui_handle.clone();
-        slint::invoke_from_event_loop(move || {
-            if let Some(ui) = h.upgrade() {
-                let state = ui.global::<AppState>();
-                state.set_svg_image_optimized(Image::from_rgba8(opt_1x));
-                state.set_svg_loaded(true);
-                state.set_loading_dialog(false);
-                state.set_loading_status("Rendering high quality...".into());
-            }
-        })
-        .ok();
-
-        // 5. Original @ 6x
-        let orig_6x = render_svg(&original_tree, 6.0);
-        let h = ui_handle.clone();
-        slint::invoke_from_event_loop(move || {
-            if let Some(ui) = h.upgrade() {
-                ui.global::<AppState>()
-                    .set_svg_image_original(Image::from_rgba8(orig_6x));
-            }
-        })
-        .ok();
-
-        // 6. Optimized @ 6x → enable zoom, clear status bar
-        let opt_6x = render_svg(&optimized_tree, 6.0);
+        // 4. Optimized overview → close dialog, mark loaded (the viewer then requests a frame)
+        let opt_overview = render_overview(&optimized_tree);
         slint::invoke_from_event_loop(move || {
             if let Some(ui) = ui_handle.upgrade() {
+                show_document(
+                    &ui,
+                    &renderer,
+                    Variant::Optimized,
+                    optimized_tree,
+                    opt_overview,
+                );
                 let state = ui.global::<AppState>();
-                state.set_svg_image_optimized(Image::from_rgba8(opt_6x));
+                state.set_svg_loaded(true);
                 state.set_zoom_enabled(true);
+                state.set_loading_dialog(false);
                 state.set_loading(false);
             }
         })
@@ -826,7 +808,40 @@ fn load_svg(
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    #[cfg(target_os = "windows")]
+    if std::env::var_os("SLINT_BACKEND").is_none() {
+        if let Err(error) = slint::BackendSelector::new()
+            .backend_name("winit".into())
+            .renderer_name("skia-opengl".into())
+            .select()
+        {
+            eprintln!(
+                "Could not select Skia/OpenGL for Windows; using Slint's default renderer: {error}"
+            );
+        }
+    }
+
     let ui = AppWindow::new()?;
+    let viewport_renderer = ViewportRenderer::start(ui.as_weak());
+
+    let ui_handle = ui.as_weak();
+    let renderer_for_view = Arc::clone(&viewport_renderer);
+    ui.global::<AppState>().on_request_view_render(
+        move |zoom, pan_x, pan_y, viewport_width, viewport_height, show_optimized| {
+            let Some(ui) = ui_handle.upgrade() else {
+                return;
+            };
+            renderer_for_view.request(ViewRequest {
+                zoom,
+                pan_x,
+                pan_y,
+                viewport_width,
+                viewport_height,
+                scale_factor: ui.window().scale_factor(),
+                show_optimized,
+            });
+        },
+    );
 
     let checker_image = Image::from_rgba8(make_checker_image());
     ui.global::<AppState>()
@@ -843,9 +858,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let svg_store_for_open = Arc::clone(&svg_store);
     let optimized_store_for_open = Arc::clone(&optimized_store);
     let optimize_gen_for_open = Arc::clone(&optimize_generation);
+    let renderer_for_open = Arc::clone(&viewport_renderer);
 
     ui.on_open_file(move || {
         let ui_handle2 = ui_handle.clone();
+        let renderer = Arc::clone(&renderer_for_open);
         let svg_store = Arc::clone(&svg_store_for_open);
         let optimized_store = Arc::clone(&optimized_store_for_open);
         let optimize_gen = Arc::clone(&optimize_gen_for_open);
@@ -871,8 +888,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 state.set_loading_status("Reading file...".into());
                 state.set_zoom_enabled(false);
                 state.set_svg_loaded(false);
-                state.set_svg_image_original(Default::default());
-                state.set_svg_image_optimized(Default::default());
+                renderer.clear();
+                state.set_svg_overview_original(Default::default());
+                state.set_svg_overview_optimized(Default::default());
+                state.set_frame_original(Default::default());
+                state.set_frame_optimized(Default::default());
 
                 // Reset all plugin toggles to enabled for the new file
                 state.set_plugin_apply_transforms(true);
@@ -892,6 +912,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             load_svg(
                 ui_handle2.clone(),
+                renderer,
                 Arc::clone(&svg_store),
                 Arc::clone(&optimized_store),
                 path,
@@ -1066,6 +1087,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let svg_store_for_optimize = Arc::clone(&svg_store);
     let optimized_store_for_optimize = Arc::clone(&optimized_store);
     let optimize_gen_for_callback = Arc::clone(&optimize_generation);
+    let renderer_for_optimize = Arc::clone(&viewport_renderer);
     ui.global::<AppState>().on_request_optimize(move || {
         let svg_str = svg_store_for_optimize.lock().unwrap().clone();
         if svg_str.is_empty() {
@@ -1078,6 +1100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
         render_optimized(
             ui_handle.clone(),
+            Arc::clone(&renderer_for_optimize),
             svg_str,
             config,
             Arc::clone(&optimize_gen_for_callback),

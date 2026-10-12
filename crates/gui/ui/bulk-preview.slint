@@ -10,20 +10,38 @@ export component BulkPreview inherits Rectangle {
   in property <length> svg-height;
 
   property <float> fit-zoom: root.svg-width > 0 && root.svg-height > 0
-    ? max(0.01, min(1.0, min((root.width - 32px) / root.svg-width, (root.height - 70px) / root.svg-height)))
+    ? max(0.000001, min(1.0, min(
+        (root.width - 32px) / root.svg-width,
+        (root.height - 70px) / root.svg-height
+      )))
     : 1.0;
   property <float> zoom: root.fit-zoom;
-  property <float> max-zoom: 6.0;
+  property <float> min-zoom: root.fit-zoom * 0.05;
+  property <float> max-zoom: max(1.0, min(6.0, root.fit-zoom * 32.0));
   property <length> pan-x: (root.width - root.svg-width * root.zoom) / 2;
   property <length> pan-y: (root.height - 38px - root.svg-height * root.zoom) / 2;
   property <bool> is-panning: false;
   property <length> last-mouse-x;
   property <length> last-mouse-y;
 
+  function clamp-pan() {
+    let image_width = root.svg-width * root.zoom;
+    let image_height = root.svg-height * root.zoom;
+    let viewport_height = root.height - 38px;
+    root.pan-x = image_width <= root.width
+      ? (root.width - image_width) / 2
+      : max(48px - image_width, min(root.width - 48px, root.pan-x));
+    root.pan-y = image_height <= viewport_height
+      ? (viewport_height - image_height) / 2
+      : max(48px - image_height, min(viewport_height - 48px, root.pan-y));
+  }
+
   function apply-zoom(next-zoom: float, anchor-x: length, anchor-y: length) {
-    root.pan-x = anchor-x - (anchor-x - root.pan-x) * next-zoom / root.zoom;
-    root.pan-y = anchor-y - (anchor-y - root.pan-y) * next-zoom / root.zoom;
-    root.zoom = next-zoom;
+    let clamped_zoom = max(root.min-zoom, min(root.max-zoom, next-zoom));
+    root.pan-x = anchor-x - (anchor-x - root.pan-x) * clamped_zoom / root.zoom;
+    root.pan-y = anchor-y - (anchor-y - root.pan-y) * clamped_zoom / root.zoom;
+    root.zoom = clamped_zoom;
+    root.clamp-pan();
   }
 
   function reset-view() {
@@ -74,10 +92,18 @@ export component BulkPreview inherits Rectangle {
       background: Theme.background;
 
       TouchArea {
+        mouse-cursor: root.svg-width <= 0 || root.svg-height <= 0
+          || (root.svg-width * root.zoom <= root.width
+              && root.svg-height * root.zoom <= root.height - 38px)
+          ? default
+          : (root.is-panning ? grabbing : grab);
+
         scroll-event(event) => {
           if event.delta-y != 0 && root.svg-width > 0 {
+            let delta = max(-240px, min(240px, event.delta-y));
+            let factor = Math.pow(1.0015, Math.abs(delta / 1px));
             root.apply-zoom(
-              event.delta-y > 0 ? min(root.max-zoom, root.zoom * 1.1) : max(0.1, root.zoom / 1.1),
+              delta > 0px ? root.zoom * factor : root.zoom / factor,
               self.mouse-x,
               self.mouse-y
             );
@@ -85,7 +111,9 @@ export component BulkPreview inherits Rectangle {
           accept
         }
         pointer-event(event) => {
-          if (event.button == PointerEventButton.left) {
+          if (
+            event.button == PointerEventButton.left || event.button == PointerEventButton.middle
+          ) {
             if (event.kind == PointerEventKind.down) {
               root.is-panning = true;
               root.last-mouse-x = self.mouse-x;
@@ -99,10 +127,12 @@ export component BulkPreview inherits Rectangle {
           if (root.is-panning) {
             root.pan-x += self.mouse-x - root.last-mouse-x;
             root.pan-y += self.mouse-y - root.last-mouse-y;
+            root.clamp-pan();
             root.last-mouse-x = self.mouse-x;
             root.last-mouse-y = self.mouse-y;
           }
         }
+        double-clicked => { root.reset-view(); }
 
         Rectangle {
           width: parent.width;

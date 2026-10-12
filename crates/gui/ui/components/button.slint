@@ -8,6 +8,7 @@ export component NButton {
   in property <bool> group: false;
   in property <bool> group-first: false;
   in property <bool> group-last: false;
+  in property <bool> compact: false;
   callback clicked;
 
   property <bool> pressed: touch.pressed;
@@ -16,7 +17,7 @@ export component NButton {
   forward-focus: focus-scope;
   horizontal-stretch: 0;
   height: 32px;
-  min-width: 64px;
+  min-width: root.compact ? 30px : 64px;
 
   // Focus ring — visible only when keyboard-focused
   Rectangle {
@@ -47,8 +48,8 @@ export component NButton {
     HorizontalLayout {
       padding-top: 6px;
       padding-bottom: 6px;
-      padding-left: 16px;
-      padding-right: 16px;
+      padding-left: root.compact ? 0px : 16px;
+      padding-right: root.compact ? 0px : 16px;
 
       Text {
         text: root.text;

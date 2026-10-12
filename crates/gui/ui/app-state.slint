@@ -1,15 +1,27 @@
+// A sharp render of part of the SVG. x/y/width/height are in SVG user units;
+// width == 0 means there is no frame yet.
+export struct ViewFrame {
+  image: image,
+  x: float,
+  y: float,
+  width: float,
+  height: float,
+}
+
 export global AppState {
   // Checkerboard background
   in property <image> checker-image;
 
-  // SVG Textures and Metadata
-  in property <image> svg-image-original;
-  in property <image> svg-image-optimized;
+  // SVG rendering: a whole-document overview plus a sharp render of the visible area
+  in property <image> svg-overview-original;
+  in property <image> svg-overview-optimized;
+  in property <ViewFrame> frame-original;
+  in property <ViewFrame> frame-optimized;
   in property <length> svg-width;
   in property <length> svg-height;
 
   // Loading related
-  in property <bool> zoom-enabled: false;
+  in property <bool> zoom-enabled: false; // enabled as soon as the overview is ready
   in property <bool> svg-loaded: false;
   in property <bool> loading: false;
   in property <string> loading-status: "";
@@ -48,6 +60,8 @@ export global AppState {
   in-out property <float> export-png-height;
 
   callback request-optimize();
+  // zoom, pan-x, pan-y, viewport-width, viewport-height (logical px), show-optimized
+  callback request-view-render(float, float, float, float, float, bool);
   callback export-file(/* format: */ string);
   in-out property <string> export-error: "";
 }

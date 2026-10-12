@@ -1,33 +1,141 @@
 import { NButton } from "./components/button.slint";
 import { Theme } from "./theme.slint";
-import { AppState } from "./app-state.slint";
+import { AppState, ViewFrame } from "./app-state.slint";
+
+// Draws `source` at the given geometry (in the parent's coordinates), clipped to this element.
+component ClippedImage inherits Rectangle {
+  in property <image> source;
+  in property <length> image-x;
+  in property <length> image-y;
+  in property <length> image-width;
+  in property <length> image-height;
+  clip: true;
+  Image {
+    source: root.source;
+    x: root.image-x - root.x;
+    y: root.image-y - root.y;
+    width: root.image-width;
+    height: root.image-height;
+    image-fit: fill;
+  }
+}
 
 export component SvgViewer inherits Rectangle {
   callback open-file();
-  property <float> fit-zoom: AppState.svg-width > 0px && AppState.svg-height > 0px
-    ? max(0.01, min(1.0, min((root.width - 80px) / AppState.svg-width, (root.height - 80px) / AppState.svg-height))) : 1.0;
-  property <float> zoom: root.fit-zoom;
-  property <bool> loaded: AppState.svg-loaded;
-  changed loaded => {
-    if root.loaded { root.reset-view(); }
-  }
-  function apply-zoom(next-zoom: float, anchor-x: length, anchor-y: length) {
-    root.pan_x = anchor-x - (anchor-x - root.pan_x) * next-zoom / root.zoom;
-    root.pan_y = anchor-y - (anchor-y - root.pan_y) * next-zoom / root.zoom;
-    root.zoom = next-zoom;
-  }
-  function reset-view() {
-    root.zoom = root.fit-zoom;
-    root.pan_x = (root.width - AppState.svg-width * root.zoom) / 2;
-    root.pan_y = (root.height - AppState.svg-height * root.zoom) / 2;
-  }
-  property <float> max_zoom: 6.0;
 
+  property <float> fit-zoom: AppState.svg-width > 0px && AppState.svg-height > 0px
+    ? max(0.000001, min(1.0, min(
+        (root.width - 80px) / AppState.svg-width,
+        (root.height - 80px) / AppState.svg-height
+      )))
+    : 1.0;
+  property <float> zoom: root.fit-zoom;
+  property <float> min-zoom: root.fit-zoom * 0.05;
+  property <float> max-zoom: 10.0;
+  property <bool> loaded: AppState.svg-loaded;
   property <length> pan_x: (root.width - AppState.svg-width * root.zoom) / 2;
   property <length> pan_y: (root.height - AppState.svg-height * root.zoom) / 2;
   property <bool> is_panning: false;
   property <length> last_mouse_x;
   property <length> last_mouse_y;
+
+  // The whole SVG in viewer coordinates.
+  property <length> svg-w: AppState.svg-width * root.zoom;
+  property <length> svg-h: AppState.svg-height * root.zoom;
+
+  // The sharp frame Rust rendered for the last requested view, placed in the current view.
+  // Until a new frame arrives it is only translated (pan) or scaled (zoom).
+  property <ViewFrame> frame: AppState.show-optimized ? AppState.frame-optimized : AppState.frame-original;
+  property <image> overview: AppState.show-optimized ? AppState.svg-overview-optimized : AppState.svg-overview-original;
+  property <bool> has-frame: root.frame.width > 0;
+  property <length> frame-x: root.pan_x + root.frame.x * root.zoom * 1px;
+  property <length> frame-y: root.pan_y + root.frame.y * root.zoom * 1px;
+  property <length> frame-w: root.frame.width * root.zoom * 1px;
+  property <length> frame-h: root.frame.height * root.zoom * 1px;
+
+  // The low-resolution overview only fills the parts of the SVG the frame doesn't cover, so
+  // semi-transparent edges in the frame never composite over a second copy of the drawing.
+  // Without a frame the hole collapses to the bottom edge and the top strip covers everything.
+  property <length> hole-x: root.has-frame ? root.frame-x : root.pan_x;
+  property <length> hole-y: root.has-frame ? root.frame-y : root.pan_y + root.svg-h;
+  property <length> hole-w: root.has-frame ? root.frame-w : 0px;
+  property <length> hole-h: root.has-frame ? root.frame-h : 0px;
+
+  changed loaded => {
+    if root.loaded { root.reset-view(); }
+  }
+  changed width => { root.schedule-render(); }
+  changed height => { root.schedule-render(); }
+  property <bool> show-optimized: AppState.show-optimized;
+  changed show-optimized => { root.request-render(); }
+
+  // Asks Rust to render the visible area at device resolution for the current view.
+  function request-render() {
+    render-timer.running = false;
+    if !root.loaded { return; }
+    AppState.request-view-render(
+      root.zoom,
+      root.pan_x / 1px,
+      root.pan_y / 1px,
+      root.width / 1px,
+      root.height / 1px,
+      AppState.show-optimized
+    );
+  }
+
+  // Debounced request, used while zooming and resizing.
+  function schedule-render() {
+    render-timer.running = true;
+    render-timer.restart();
+  }
+
+  // While panning, ask for a new frame as soon as part of the visible SVG isn't covered.
+  function render-if-uncovered() {
+    let visible-left = max(0px, root.pan_x);
+    let visible-top = max(0px, root.pan_y);
+    let visible-right = min(root.width, root.pan_x + root.svg-w);
+    let visible-bottom = min(root.height, root.pan_y + root.svg-h);
+    if visible-right <= visible-left || visible-bottom <= visible-top { return; }
+    if !root.has-frame
+      || root.frame-x > visible-left + 0.5px
+      || root.frame-y > visible-top + 0.5px
+      || root.frame-x + root.frame-w < visible-right - 0.5px
+      || root.frame-y + root.frame-h < visible-bottom - 0.5px {
+      root.request-render();
+    }
+  }
+
+  // Keep at least 48px of the SVG on screen.
+  function clamp-pan() {
+    root.pan_x = max(min(0px, 48px - root.svg-w), min(root.width - 48px, root.pan_x));
+    root.pan_y = max(min(0px, 48px - root.svg-h), min(root.height - 48px, root.pan_y));
+  }
+
+  function apply-zoom(next-zoom: float, anchor-x: length, anchor-y: length) {
+    let clamped_zoom = max(root.min-zoom, min(root.max-zoom, next-zoom));
+    root.pan_x = anchor-x - (anchor-x - root.pan_x) * clamped_zoom / root.zoom;
+    root.pan_y = anchor-y - (anchor-y - root.pan_y) * clamped_zoom / root.zoom;
+    root.zoom = clamped_zoom;
+    root.clamp-pan();
+    root.schedule-render();
+  }
+
+  function zoom-step(inward: bool) {
+    root.apply-zoom(inward ? root.zoom * 1.25 : root.zoom / 1.25, root.width / 2, root.height / 2);
+  }
+
+  function reset-view() {
+    root.zoom = root.fit-zoom;
+    root.pan_x = (root.width - AppState.svg-width * root.zoom) / 2;
+    root.pan_y = (root.height - AppState.svg-height * root.zoom) / 2;
+    root.request-render();
+  }
+
+  render-timer := Timer {
+    interval: 60ms;
+    running: false;
+    triggered => { root.request-render(); }
+  }
 
   clip: true;
   horizontal-stretch: 1;
@@ -56,23 +164,35 @@ export component SvgViewer inherits Rectangle {
   }
 
   TouchArea {
+    mouse-cursor: !root.loaded || !AppState.zoom-enabled
+      ? default
+      : (root.is_panning ? grabbing : grab);
+
     scroll-event(event) => {
-      if (AppState.zoom-enabled) {
-        if event.delta-y != 0 {
-          root.apply-zoom(event.delta-y > 0 ? min(max_zoom, zoom * 1.1) : max(0.1, zoom / 1.1), self.mouse-x, self.mouse-y);
-        }
+      if (AppState.zoom-enabled && event.delta-y != 0) {
+        let delta = max(-240px, min(240px, event.delta-y));
+        let factor = Math.pow(1.0015, Math.abs(delta / 1px));
+        root.apply-zoom(
+          delta > 0px ? root.zoom * factor : root.zoom / factor,
+          self.mouse-x,
+          self.mouse-y
+        );
       }
       accept
     }
 
     pointer-event(event) => {
-      if (AppState.zoom-enabled && event.button == PointerEventButton.left) {
+      if (AppState.zoom-enabled && (
+        event.button == PointerEventButton.left || event.button == PointerEventButton.middle
+      )) {
         if (event.kind == PointerEventKind.down) {
           root.is_panning = true;
           root.last_mouse_x = self.mouse-x;
           root.last_mouse_y = self.mouse-y;
-        } else {
+        } else if (root.is_panning) {
           root.is_panning = false;
+          // Re-centre the overscan margin around where the pan ended.
+          root.request-render();
         }
       }
     }
@@ -81,17 +201,67 @@ export component SvgViewer inherits Rectangle {
       if (root.is_panning) {
         root.pan_x += self.mouse-x - root.last_mouse_x;
         root.pan_y += self.mouse-y - root.last_mouse_y;
+        root.clamp-pan();
         root.last_mouse_x = self.mouse-x;
         root.last_mouse_y = self.mouse-y;
+        root.render-if-uncovered();
       }
     }
 
-    Image {
-      source: AppState.show-optimized ? AppState.svg-image-optimized : AppState.svg-image-original;
+    double-clicked => { root.reset-view(); }
+
+    // Overview strips above, below, left and right of the sharp frame.
+    ClippedImage {
+      source: root.overview;
       x: root.pan_x;
       y: root.pan_y;
-      width: AppState.svg-width * root.zoom;
-      height: AppState.svg-height * root.zoom;
+      width: root.svg-w;
+      height: max(0px, root.hole-y - root.pan_y);
+      image-x: root.pan_x;
+      image-y: root.pan_y;
+      image-width: root.svg-w;
+      image-height: root.svg-h;
+    }
+    ClippedImage {
+      source: root.overview;
+      x: root.pan_x;
+      y: root.hole-y + root.hole-h;
+      width: root.svg-w;
+      height: max(0px, root.pan_y + root.svg-h - root.hole-y - root.hole-h);
+      image-x: root.pan_x;
+      image-y: root.pan_y;
+      image-width: root.svg-w;
+      image-height: root.svg-h;
+    }
+    ClippedImage {
+      source: root.overview;
+      x: root.pan_x;
+      y: root.hole-y;
+      width: max(0px, root.hole-x - root.pan_x);
+      height: root.hole-h;
+      image-x: root.pan_x;
+      image-y: root.pan_y;
+      image-width: root.svg-w;
+      image-height: root.svg-h;
+    }
+    ClippedImage {
+      source: root.overview;
+      x: root.hole-x + root.hole-w;
+      y: root.hole-y;
+      width: max(0px, root.pan_x + root.svg-w - root.hole-x - root.hole-w);
+      height: root.hole-h;
+      image-x: root.pan_x;
+      image-y: root.pan_y;
+      image-width: root.svg-w;
+      image-height: root.svg-h;
+    }
+
+    if root.has-frame: Image {
+      source: root.frame.image;
+      x: root.frame-x;
+      y: root.frame-y;
+      width: root.frame-w;
+      height: root.frame-h;
       image-fit: fill;
     }
   }
@@ -120,20 +290,33 @@ export component SvgViewer inherits Rectangle {
   if AppState.svg-loaded: Rectangle {
     x: 16px;
     y: 16px;
-    width: 164px;
+    width: 212px;
     height: 34px;
     background: Theme.panel;
     border-radius: 4px;
     HorizontalLayout {
       padding: 3px;
-      spacing: 8px;
+      spacing: 6px;
+      NButton {
+        text: "−";
+        compact: true;
+        height: 28px;
+        clicked => { root.zoom-step(false); }
+      }
       Text {
+        width: 50px;
         text: Math.round(root.zoom * 100) + "%";
         color: Theme.text;
         horizontal-alignment: center;
         vertical-alignment: center;
       }
-      NButton { text: "Fit"; height: 28px; clicked => { root.reset-view(); } }
+      NButton {
+        text: "+";
+        compact: true;
+        height: 28px;
+        clicked => { root.zoom-step(true); }
+      }
+      NButton { text: "Fit"; height: 28px; min-width: 48px; clicked => { root.reset-view(); } }
     }
   }
 }

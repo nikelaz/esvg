@@ -9,9 +9,17 @@ edition = "2021"
 [dependencies]
 resvg = "0.47.0"
 rfd = "0.17.2"
-slint = { version = "1.14.1", features = ["renderer-skia"] }
 esvg-rs = { path = "../core" }
 roxmltree = "0.21.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Slint 1.11+ uses Skia's software renderer by default on Windows. Keep Skia's
+# normal platform choice elsewhere, but compile the OpenGL renderer so the app
+# can select GPU compositing by default on Windows.
+slint = { version = "1.14.1", features = ["renderer-skia", "renderer-skia-opengl"] }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+slint = { version = "1.14.1", features = ["renderer-skia"] }
 
 [build-dependencies]
 slint-build = "1.14.1"
